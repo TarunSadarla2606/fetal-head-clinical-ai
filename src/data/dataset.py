@@ -1,89 +1,176 @@
-"""HC18 Dataset and augmentation pipeline.
+"""HC18 Dataset, preprocessing, and augmentation pipeline.
 
-HC18 annotations are ellipse outlines (rings), not solid masks.
-fill_hollow_mask() converts ring annotations to solid disks via
-border flood-fill + inversion before training.
+HC18 annotations are ellipse outlines (1px rings), not solid regions.
+fill_hollow_mask() converts ring annotations to solid disks via border
+flood-fill + inversion before any training or metric computation.
 
-Augmentation (training only):
-  - Random horizontal/vertical flip
-  - Random rotation (±15 degrees)
-  - Elastic deformation (alpha=200, sigma=10)
-  - Rician noise injection (physically correct US noise model)
-  - Coarse dropout (random rectangular region blackout)
-  - Random brightness/contrast jitter
+Dataset splits (reproducible, random_state=42):
+  Static  (Phase 0): 799 train / 100 val / 100 test  (from 999 total, 80/10/10)
+  Temporal (Phase 2): 564 train / 121 val / 121 test  (from 806 clips)
 
-Dataset splits: 75% train / 20% val / 5% test (stratified by HC range).
+Per-image z-score normalisation is applied (not global mean/std).
+
+Augmentation (training only, albumentations):
+  HorizontalFlip(p=0.5), VerticalFlip(p=0.5), Rotate(limit=45, p=0.7),
+  ElasticTransform(p=0.3), GaussNoise(p=0.2), GaussianBlur(p=0.2),
+  RandomBrightnessContrast(p=0.3)
 """
 
+import cv2
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
-from typing import Optional, Tuple
-import numpy as np
+from sklearn.model_selection import train_test_split
+from typing import Optional, Tuple, List
+
+INPUT_H = 256
+INPUT_W = 384
+SEED    = 42
 
 
 def fill_hollow_mask(mask: np.ndarray) -> np.ndarray:
-    """Convert HC18 ring annotation to solid disk.
+    """Convert HC18 ring annotation (1px outline) to solid disk.
 
-    HC18 ground truth marks the skull boundary as a 1px ring.
-    Models need a solid region for Dice loss computation.
-    Flood-fill from border with 255, then invert to recover interior.
+    HC18 ground truth marks the skull boundary as a 1-pixel ellipse ring.
+    Training with ring masks produces unstable Dice gradients. This function
+    flood-fills the background from the image border, then inverts to recover
+    the solid interior region.
 
     Args:
-        mask: Binary ring mask [H, W] uint8.
+        mask: Binary ring mask [H, W] uint8 (255 = boundary, 0 = background).
 
     Returns:
-        Solid binary mask [H, W] uint8.
+        Solid binary mask [H, W] uint8 (255 = head region, 0 = background).
     """
-    # TODO: populate from notebook
-    raise NotImplementedError
+    h, w = mask.shape
+    flood = mask.copy()
+    # Flood fill from top-left corner (guaranteed to be background)
+    cv2.floodFill(flood, None, (0, 0), 255)
+    # Invert flood region: original background becomes 0, skull interior becomes 255
+    inverted = cv2.bitwise_not(flood)
+    # Union with original ring to ensure boundary pixels are included
+    solid = cv2.bitwise_or(mask, inverted)
+    return solid
+
+
+def load_image_mask(
+    img_path: Path,
+    mask_path: Path,
+    target_h: int = INPUT_H,
+    target_w: int = INPUT_W,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Load, resize, and binarise one HC18 image/mask pair.
+
+    Returns:
+        img:  [H, W] uint8 grayscale image.
+        mask: [H, W] uint8 solid binary mask (fill_hollow_mask applied).
+    """
+    img  = cv2.imread(str(img_path),  cv2.IMREAD_GRAYSCALE)
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    img  = cv2.resize(img,  (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    _, mask_bin = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    mask_solid  = fill_hollow_mask(mask_bin)
+    return img, mask_solid
 
 
 class HC18Dataset(Dataset):
-    """PyTorch Dataset for the HC18 fetal head ultrasound challenge.
+    """PyTorch Dataset for the HC18 fetal head circumference challenge.
 
     Args:
-        root: Path to HC18 dataset root (contains training_set/, test_set/).
-        split: One of 'train', 'val', 'test'.
-        augment: Apply training augmentations (ignored for val/test).
-        input_h: Model input height (default: 256).
-        input_w: Model input width (default: 384).
-        img_mean: Normalization mean (default: 0.2).
-        img_std: Normalization std (default: 0.15).
+        image_paths: List of image file paths.
+        mask_paths:  List of corresponding mask file paths.
+        augment:     Apply training augmentations (default: False).
+        input_h:     Model input height (default: 256).
+        input_w:     Model input width (default: 384).
     """
 
     def __init__(
         self,
-        root: str | Path,
-        split: str = "train",
-        augment: bool = True,
-        input_h: int = 256,
-        input_w: int = 384,
-        img_mean: float = 0.2,
-        img_std: float = 0.15,
+        image_paths: List[Path],
+        mask_paths:  List[Path],
+        augment: bool = False,
+        input_h: int = INPUT_H,
+        input_w: int = INPUT_W,
     ) -> None:
-        # TODO: populate from notebook
-        raise NotImplementedError
+        self.image_paths = image_paths
+        self.mask_paths  = mask_paths
+        self.augment     = augment
+        self.input_h     = input_h
+        self.input_w     = input_w
+
+        if augment:
+            import albumentations as A
+            from albumentations.pytorch import ToTensorV2
+            self._aug = A.Compose([
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.Rotate(limit=45, p=0.7),
+                A.ElasticTransform(p=0.3),
+                A.GaussNoise(p=0.2),
+                A.GaussianBlur(p=0.2),
+                A.RandomBrightnessContrast(p=0.3),
+            ])
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        return len(self.image_paths)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (image, mask) tensors, both [1, H, W] float32."""
-        raise NotImplementedError
+        """Return (image, mask) tensors, both [1, H, W] float32 in [0, 1]."""
+        img, mask = load_image_mask(
+            self.image_paths[idx], self.mask_paths[idx],
+            self.input_h, self.input_w,
+        )
+
+        if self.augment:
+            aug = self._aug(image=img, mask=mask)
+            img, mask = aug["image"], aug["mask"]
+
+        # Per-image z-score normalisation
+        img_f = img.astype(np.float32)
+        mean, std = img_f.mean(), img_f.std()
+        img_norm = (img_f - mean) / (std + 1e-5)
+
+        img_t  = torch.from_numpy(img_norm).unsqueeze(0)          # [1, H, W]
+        mask_t = torch.from_numpy((mask > 127).astype(np.float32)).unsqueeze(0)
+        return img_t, mask_t
 
 
 def build_loaders(
     root: str | Path,
     batch_size: int = 16,
-    num_workers: int = 4,
-    input_h: int = 256,
-    input_w: int = 384,
+    num_workers: int = 2,
+    input_h: int = INPUT_H,
+    input_w: int = INPUT_W,
+    seed: int = SEED,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Build train / val / test DataLoaders for HC18.
+    """Build train / val / test DataLoaders for HC18 (80/10/10 split).
+
+    Args:
+        root: HC18 dataset root (must contain training_set/ subdirectory).
 
     Returns:
         (train_loader, val_loader, test_loader)
     """
-    # TODO: populate from notebook
-    raise NotImplementedError
+    root = Path(root)
+    img_dir  = root / "training_set"
+    all_imgs  = sorted(img_dir.glob("*_HC.png"))
+    all_masks = [p.parent / (p.stem + "_Annotation.png") for p in all_imgs]
+
+    indices = list(range(len(all_imgs)))
+    train_idx, temp_idx = train_test_split(indices, test_size=0.2,  random_state=seed)
+    val_idx,  test_idx  = train_test_split(temp_idx, test_size=0.5, random_state=seed)
+
+    def _make(idx: list, augment: bool) -> DataLoader:
+        ds = HC18Dataset(
+            [all_imgs[i]  for i in idx],
+            [all_masks[i] for i in idx],
+            augment=augment,
+            input_h=input_h,
+            input_w=input_w,
+        )
+        return DataLoader(ds, batch_size=batch_size, shuffle=augment,
+                          num_workers=num_workers, pin_memory=True)
+
+    return _make(train_idx, True), _make(val_idx, False), _make(test_idx, False)

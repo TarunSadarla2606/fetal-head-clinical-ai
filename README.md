@@ -2,7 +2,7 @@
 
 # Fetal Head Circumference Clinical AI
 
-**Automated HC measurement · Gestational age estimation · Temporal uncertainty quantification · Model compression**
+**Automated HC measurement · Gestational age estimation · Structural pruning compression · Temporal uncertainty quantification · Clinical report generation**
 
 [![HuggingFace Space](https://img.shields.io/badge/🤗%20HuggingFace-Live%20Demo-FFD21E)](https://huggingface.co/spaces/TarunSadarla2606/fetal-head-clinical-ai)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)](https://python.org)
@@ -15,7 +15,8 @@
 
 ---
 
-> **Independent research continuation** of a course project ([CSCE 6260, UNT Fall 2025](https://github.com/TarunSadarla2606/fetal-head-cine-segmentation)) — developed after the semester to push from 86% Dice / 17.25mm MAE to a deployable clinical-grade pipeline. All work here is sole-authored.
+> **Independent research continuation** of a course project ([CSCE 6260, UNT Fall 2025](https://github.com/TarunSadarla2606/fetal-head-cine-segmentation)) — developed after the semester to push from 86% Dice / 17.25 mm MAE to a deployable clinical-grade pipeline. All work here is sole-authored.  
+> Directed study: **Prof. Russel Pears** · Fetal head project: **Prof. Xiaohui Yuan** · University of North Texas, 2026.
 
 ---
 
@@ -32,14 +33,14 @@ Upload any 2D fetal head ultrasound (or pick a demo subject). Choose single-fram
 Fetal head circumference (HC) is one of three standard biometric measurements in every routine antenatal scan — currently performed manually by sonographers using calipers on frozen ultrasound frames. It is the primary indicator for gestational age estimation and intrauterine growth restriction screening.
 
 This system automates the full pipeline:
-1. Segments the fetal skull boundary with a trained Residual U-Net
-2. Fits a Ramanujan ellipse to the predicted mask
-3. Computes HC in mm and converts to gestational age (Hadlock 1984 cubic polynomial)
-4. Optionally processes 16-frame cine-loops for temporal consensus + reliability scoring
-5. Generates GradCAM++ explainability maps showing which regions drove the boundary decision
-6. Produces downloadable PDF clinical reports (LLM-generated narrative via Claude Haiku, or rule-based fallback)
+1. Segments the fetal skull boundary with a trained Residual U-Net (pre-activation, deep supervision)
+2. Fits a Ramanujan ellipse to the predicted mask and computes HC in mm
+3. Converts HC to gestational age using the Hadlock (1984) cubic polynomial
+4. Optionally processes 16-frame synthetic cine-loops for temporal consensus + reliability scoring
+5. Generates GradCAM++ explainability maps and downloadable PDF clinical reports
+6. Audits model fairness across GA trimesters, image quality, and HC size range (Phase 3)
 
-All four model variants pass the **ISUOG ≤3mm acceptable error threshold** for second-trimester biometry.
+All four model variants pass the **ISUOG ±3 mm acceptable error threshold** for second-trimester biometry.
 
 ---
 
@@ -48,58 +49,77 @@ All four model variants pass the **ISUOG ≤3mm acceptable error threshold** for
 | Phase | Type | Architecture | Dice (%) | MAE (mm) | Params | vs Baseline |
 |-------|------|-------------|----------|----------|--------|-------------|
 | **Phase 0** | Static | Residual U-Net + deep supervision | **97.75** | **1.65** | 8.11M | — |
-| **Phase 4a** | Static | Phase 0 — hybrid crossover pruned | 97.64 | 1.76 | 4.57M | **−43.7% params** |
+| **Phase 4a** | Static | Phase 0 — Hybrid Crossover pruned | 97.64 | 1.76 | 4.57M | **−43.7% params** |
 | **Phase 2** | Temporal (16 frames) | 2D U-Net + temporal self-attention | 95.95 | 2.10 | 8.90M | — |
 | **Phase 4b** | Temporal (16 frames) | Phase 2 — backbone pruned, TAM intact | 96.00 | 2.06 | 5.20M | **−41.6% params** |
 
-All results on **HC18 held-out test set** (335 images, 551 pregnancies, Radboud UMC Netherlands).  
-✅ All models pass ISUOG ≤3mm threshold for second-trimester screening biometry.
+All results on **HC18 test set** (Radboud UMC, Netherlands). ✅ All models pass ISUOG ≤3 mm threshold.
 
 ---
 
 ## Development Arc
 
-This project evolved through four phases, each building on the last:
-
 ```
-Phase 0 — Static Baseline
-  Residual U-Net with deep supervision auxiliary heads at dec3, dec2
-  Boundary-weighted BCE + Dice loss
-  Augmentation: elastic deformation, Rician noise injection, coarse dropout
-  Training: HC18 static frames (800 train / 5% val / test)
+Phase 0 — Static Residual U-Net
+  Pre-activation residual blocks (BN → ReLU → Conv) with deep supervision
+  Auxiliary segmentation heads at dec3 and dec2 (loss: main + 0.5×aux2 + 0.3×aux3)
+  Boundary-weighted BCE+Dice loss with Sobel-derived edge weight maps
+  Augmentation: HorizontalFlip, VerticalFlip, Rotate(±45°), ElasticTransform,
+                GaussNoise, GaussianBlur, RandomBrightnessContrast (albumentations)
+  Training: 100 epochs, Adam lr=1e-3, ReduceLROnPlateau(factor=0.5, patience=10)
+  Dataset: 999 HC18 images → 799 train / 100 val / 100 test
+  Environment: Google Colab, NVIDIA T4 GPU
   Result: Dice 97.75% · MAE 1.65 mm · 8.11M params
 
        ↓
 
 Phase 1 — Pseudo-LDDM v2: Synthetic Cine Generation
-  Physics-inspired conversion of static HC18 frames → realistic 16-frame cine-loops
-  Key improvements over prior work (v1, course project):
-    - Ornstein-Uhlenbeck probe motion: non-periodic, mean-reverting, stochastic
-    - Cross-sectional mask variation: per-frame ellipse axis perturbation
-      (the critical fix — makes temporal task non-trivial)
-    - Rician speckle noise (physically correct ultrasound noise model)
-    - Depth-dependent intensity attenuation
-    - Acoustic shadowing behind the skull boundary
-    - TGC (time-gain compensation) drift between frames
-  Output: 806 high-fidelity cine clips · Mean temporal HC std: 10.33 px
-  (vs ~0.0 px in v1 — degenerate sequences provided no temporal learning signal)
+  Physics-inspired conversion of static HC18 frames → 16-frame cine-loops
+  Key fix over v1 (course project): cross-sectional mask variation (per-frame
+  ellipse axis perturbation) makes temporal HC std non-trivial (10.33 px vs ~0.0)
+  Ornstein-Uhlenbeck probe motion (mean-reverting, non-periodic)
+  Rician speckle noise (physically correct ultrasound model)
+  Depth-dependent attenuation, acoustic shadowing, TGC drift (Stage 4)
+  Environment: Google Colab, NVIDIA T4 GPU
+  Output: 806 high-fidelity cine clips
 
        ↓
 
-Phase 2 — Temporal Attention System
-  Shared 2D Residual U-Net encoder (Phase 0 pretrained)
-  Lightweight temporal self-attention module at bottleneck (~200K additional params)
-  Three-stage training: frozen backbone → partial unfreeze → full fine-tune
-  Processes 16-frame clips · Per-frame uncertainty · Reliability scoring
-  Result: Dice 95.95% · MAE 2.10 mm · 8.90M params
+Phase 2 — Temporal Attention U-Net
+  Shared 2D encoder (Phase 0 pretrained, base_ch=32)
+  Lightweight TAM at bottleneck: pool → Linear(512→256) → MHA(8 heads) → FFN → gate
+  Three-stage training: Stage 1 (TAM only, lr=3e-4, 8 ep) → Stage 2 (decoder+TAM,
+  lr=1e-4, 15 ep) → Stage 3 (full fine-tune, lr=3e-5, 30 ep)
+  Dataset: 806 clips → 564 train / 121 val / 121 test
+  Environment: Google Colab, NVIDIA T4 GPU
+  Result: Best val Dice 96.29% · Test Dice 95.95% · MAE 2.10 mm · 8.90M params
+
+       ↓
+
+Phase 3 — XAI, Bias Audit & Governance
+  Not a training phase — a structured fairness and explainability audit
+  GradCAM++ on Phase 0 static model (boundary region attention visualization)
+  Temporal attention matrix visualization for Phase 2 (T×T heatmaps)
+  Subgroup Dice/MAE analysis by GA trimester (Early <20w / Mid 20–30w / Late >30w)
+  Image quality stratification (Laplacian variance), HC size range analysis
+  Finding: Mid-trimester best performance; Early slightly higher MAE (smaller skull)
+  No systematic over/under-measurement bias by HC size range
 
        ↓
 
 Phase 4 — Structured Pruning (Hybrid Crossover Filter Synthesis)
-  Method from CNN structured pruning research (CSCE 5934, UNT — see related work)
-  Phase 0 → Phase 4a: −43.7% params · Dice 97.64% · MAE 1.76 mm (−0.11pp Dice)
-  Phase 2 → Phase 4b: −41.6% params · Dice 96.00% · MAE 2.06 mm (+0.05pp Dice)
-  TAM preserved intact in Phase 4b — bottleneck pruning accounts for attention channels
+  ILR importance scoring: 0.6×RMS activation + 0.4×filter L1 norm + 0.2×Frobenius
+  Hybrid Crossover merging: dropped channel features synthesised into kept channel
+  via 50-step Adam regression (information preservation, not discard)
+  Burst-sequential pruning with adaptive burst size + rollback guard rails
+  3 prune-FT cycles with KD recovery (teacher = frozen baseline, α=0.5, T=4.0)
+  Hard floors: enc3≥64, enc4≥128, bottleneck≥256, dec4≥128, dec3≥64
+  Guard rails: Dice drop ≤4pp, MAE increase ≤1.5mm
+
+  Phase 4a (static):   8.11M → 4.57M (−43.7%) · Dice 97.64% · MAE 1.76 mm
+  Phase 4b (temporal): 8.90M → 5.20M (−41.6%) · Dice 96.00% · MAE 2.06 mm
+  Phase 4b critical fix: TAM proj_in/proj_out resized with bottleneck pruning
+  Phase 4b accuracy improves after pruning (103.8% FT recovery rate)
 ```
 
 ---
@@ -110,70 +130,75 @@ Phase 4 — Structured Pruning (Hybrid Crossover Filter Synthesis)
 |--------|-------------|----------|----------|------|
 | **A** | Phase 0 — static single frame | 97.36 | 1.75 | Baseline |
 | **B** | 16-frame cine, identity attention | 81.48 | 19.37 | No TAM |
-| **C** | 16-frame cine + temporal attention | **95.71** | **2.10** | Full system |
+| **C** | 16-frame cine + temporal attention | **95.95** | **2.10** | Full system |
 
-The **B→C gap (+14.23pp Dice, −17.27mm MAE)** shows that temporal attention is load-bearing, not incidental. Without it, inconsistent per-frame predictions collapse into poor consensus masks. The ~200K TAM parameter addition recovers near-baseline performance on temporal data and closes 93% of the B→A Dice gap.
+The **B→C gap (+13.5pp Dice, −17.3mm MAE)** confirms the TAM is load-bearing: without it, inconsistent per-frame predictions collapse consensus masks. The ~200K TAM parameter addition recovers 93% of the B→A Dice gap.
 
 ---
 
 ## System Architecture
 
-### Phase 0 — Residual U-Net with Deep Supervision
+### Phase 0 — Pre-Activation Residual U-Net (base_ch=32)
 
 ```
-Input: [B, 1, 256, 384] — grayscale, normalized (mean=0.2, std=0.15)
-  │
-  ├─ Enc1: ResBlock(1→32)    → MaxPool(2)   [B, 32, 128, 192]
-  ├─ Enc2: ResBlock(32→64)   → MaxPool(2)   [B, 64,  64,  96]
-  ├─ Enc3: ResBlock(64→128)  → MaxPool(2)   [B, 128, 32,  48]
-  ├─ Enc4: ResBlock(128→256) → MaxPool(2)   [B, 256, 16,  24]
-  │
-  Bottleneck: ResBlock(256→512)             [B, 512, 16,  24]
-  │
-  ├─ Dec4: ConvTranspose + Skip(Enc4) → ResBlock → aux_d3 head  ←── deep supervision
-  ├─ Dec3: ConvTranspose + Skip(Enc3) → ResBlock → aux_d2 head  ←── deep supervision
-  ├─ Dec2: ConvTranspose + Skip(Enc2) → ResBlock
-  └─ Dec1: ConvTranspose + Skip(Enc1) → ResBlock → sigmoid output
+ResidualBlock: BN → ReLU → Conv(in→out, k=3) → BN → ReLU → Conv(out→out, k=3) + skip
+               skip = Conv1×1(in→out) if in≠out, else Identity
 
-ResBlock: BN → ReLU → Conv(in→out, k=3) → BN → ReLU → Conv(out→out, k=3) + skip
-Loss: L_main + 0.3×L_aux3 + 0.1×L_aux2   (boundary-weighted BCE + Dice)
+Input: [B, 1, 256, 384]  grayscale, per-image z-score normalised
+  │
+  ├─ enc1: ResidualBlock(1→32)    → [B,  32, 256, 384]
+  │  MaxPool(2)                   → [B,  32, 128, 192]
+  ├─ enc2: ResidualBlock(32→64)   → [B,  64, 128, 192]
+  │  MaxPool(2)                   → [B,  64,  64,  96]
+  ├─ enc3: ResidualBlock(64→128)  → [B, 128,  64,  96]
+  │  MaxPool(2)                   → [B, 128,  32,  48]
+  ├─ enc4: ResidualBlock(128→256) → [B, 256,  32,  48]
+  │  MaxPool(2)                   → [B, 256,  16,  24]
+  │
+  bottleneck: ResidualBlock(256→512)              [B, 512, 16, 24]
+  │
+  ├─ up4: ConvTranspose2d(512→256, stride=2)
+  │  dec4: ResidualBlock(512→256)  [cat up4 + enc4]
+  ├─ up3: ConvTranspose2d(256→128, stride=2)
+  │  dec3: ResidualBlock(256→128)  [cat up3 + enc3] → aux_d3: Conv2d(128→1) ← deep supervision
+  ├─ up2: ConvTranspose2d(128→64,  stride=2)
+  │  dec2: ResidualBlock(128→64)   [cat up2 + enc2] → aux_d2: Conv2d(64→1)  ← deep supervision
+  ├─ up1: ConvTranspose2d(64→32,   stride=2)
+  │  dec1: ResidualBlock(64→32)    [cat up1 + enc1]
+  └─ final: Conv2d(32→1)
+
+Loss: main_loss + 0.5×aux_d2_loss + 0.3×aux_d3_loss
+      each = BoundaryWeightedDiceLoss (Sobel boundary weight map, w=2.0)
+Training: 100 epochs · Adam lr=1e-3 · ReduceLROnPlateau(factor=0.5, patience=10)
 ```
 
 ---
 
 ### Phase 1 — Pseudo-LDDM v2 Cine Synthesis
 
-Converts a single static HC18 frame into a 16-frame cine sequence with clinically realistic motion and noise. The core challenge: generating sequences where per-frame HC values actually vary (non-trivial temporal signal) while staying anatomically consistent.
-
 ```python
-def generate_cine(img_gray, n_frames=16):
-    # 1. Ornstein-Uhlenbeck probe motion (mean-reverting, stochastic)
-    tx  = ornstein_uhlenbeck(n_frames, theta=0.15, sigma=2.0)   # translation x
-    ty  = ornstein_uhlenbeck(n_frames, theta=0.15, sigma=1.5)   # translation y
-    rot = ornstein_uhlenbeck(n_frames, theta=0.20, sigma=0.40)  # rotation
+# Ornstein-Uhlenbeck probe motion (non-periodic, mean-reverting)
+tx  = ornstein_uhlenbeck(n_frames, theta=0.15, sigma=2.0)  # translation x (pixels)
+ty  = ornstein_uhlenbeck(n_frames, theta=0.15, sigma=1.5)  # translation y
+rot = ornstein_uhlenbeck(n_frames, theta=0.20, sigma=0.40) # rotation (degrees)
 
-    for i, frame:
-        # 2. Per-frame ellipse axis perturbation (cross-sectional variation)
-        #    → makes HC vary across frames, forcing attention to be useful
-        # 3. Warp affine transform with OU motion
-        # 4. Rician speckle: sqrt(real² + imag²) noise model
-        # 5. Depth attenuation: multiply by exp(-k × depth_fraction)
-        # 6. Acoustic shadowing behind skull boundary
-        # 7. TGC drift between frames
-
-    return frames  # uint8, shape (16, H, W)
+# Per frame:
+# 1. Perturb ellipse semi-axes (cross-sectional variation → non-trivial HC changes)
+# 2. Warp affine with (tx, ty, rot)
+# 3. Rician speckle: sqrt(real² + imag²)
+# 4. Depth attenuation: multiply by exp(−k × depth_fraction)
+# 5. Acoustic shadowing behind skull boundary  (Stage 4)
+# 6. TGC drift between frames                  (Stage 4)
 ```
 
-**v1 vs v2 comparison:**
-
-| Component | v1 (Course Project) | v2 (This Work) |
-|-----------|--------------------|-----------------|
+| Component | Course project v1 | This work v2 |
+|-----------|-------------------|--------------|
 | Motion model | Sinusoidal (periodic) | Ornstein-Uhlenbeck (stochastic) |
 | Cross-sectional variation | None | Per-frame ellipse axis perturbation |
 | Noise model | Gaussian | Rician (physically correct) |
 | Intensity variation | None | Depth-dependent attenuation |
 | Acoustic effects | None | Shadowing + TGC drift |
-| Clips generated | — | 806 (Stage 4 full fidelity) |
+| Clips generated | — | 806 |
 | Temporal HC std | ~0.0 px (degenerate) | **10.33 px** |
 
 ---
@@ -181,132 +206,103 @@ def generate_cine(img_gray, n_frames=16):
 ### Phase 2 — Temporal Attention Architecture
 
 ```
-Input clip: [B, 16, 1, 256, 384]
+Input clip: [B, 16, 1, H, W]
   │
-  Reshape to [B×16, 1, 256, 384]
+  Reshape → [B×16, 1, H, W]
   │
-  2D Residual U-Net encoder (shared Phase 0 weights)
+  Shared 2D Encoder (Phase 0 weights, base_ch=32)
   │
   Bottleneck: [B×16, 512, h, w]
   │
-  Reshape to [B, 16, 512, h, w]
+  Reshape → [B, 16, 512, h, w]
   │
   ┌─────────────────────────────────────────────────┐
-  │   Temporal Attention Module (TAM) — ~200K params │
+  │  Temporal Attention Module (TAM)  ~200K params   │
   │                                                   │
-  │   Spatial avg pool  → [B, 16, 512]               │
-  │   Linear(512→256)   → [B, 16, 256]               │
-  │   + positional encoding                           │
-  │   Multi-head attention (8 heads, dim=256)         │
-  │   FFN: 256 → 1024 → 256                          │
-  │   Linear(256→512) → sigmoid gate                 │
-  │   Element-wise multiply with bottleneck           │
-  │   Output: [B, 16, 512, h, w] + attn [16, 16]     │
+  │  Spatial avg-pool → [B, 16, 512]                 │
+  │  Linear(512→256) + positional encoding           │
+  │  LayerNorm → MHA(8 heads, dim=256) → residual    │
+  │  LayerNorm → FFN(256→512→256, GELU) → residual   │
+  │  Linear(256→512) → Sigmoid → gate                │
+  │  Element-wise multiply with bottleneck sequence   │
+  │  Output: [B, 16, 512, h, w] + attn [16, 16]      │
   └─────────────────────────────────────────────────┘
   │
-  Reshape to [B×16, 512, h, w]
+  Reshape → [B×16, 512, h, w]
   │
-  2D Decoder (shared weights)
+  Shared 2D Decoder
   │
-  Output: [B, 16, 1, 256, 384]  per-frame logits
+  Reshape → [B, 16, 1, H, W]  per-frame logits
   │
-  Consensus mask: mean(sigmoid(logits)) > threshold
-  Uncertainty map: std(sigmoid(logits) > threshold, across T)
-  Reliability: max(0, 1 − std(HC_per_frame) / mean(HC_per_frame))
+  Consensus: mean(sigmoid(logits), dim=T) > threshold
+  Uncertainty: std(sigmoid(logits) > threshold, dim=T)
 ```
 
-**Three-stage training:**
-1. Frozen encoder — train TAM + decoder only (10 epochs, lr=1e-3)
-2. Partial unfreeze — enc3, enc4, bottleneck + TAM + decoder (10 epochs, lr=1e-4)
-3. Full fine-tune — all layers (20 epochs, lr=1e-5, ReduceLROnPlateau)
+**Three-stage training (Colab T4, 806 clips — 564/121/121):**
+
+| Stage | Trainable | LR | Epochs | Best result |
+|-------|-----------|-----|--------|-------------|
+| 1 | TAM only (backbone frozen) | 3e-4 | 8 (early stop ep.6) | Val Dice 96.03% |
+| 2 | TAM + decoder (encoder frozen) | 1e-4 | 15 (best ep.12) | Val Dice 96.24% |
+| 3 | Full fine-tune | 3e-5 | 30 (early stop ep.19) | Val Dice 96.29% |
+
+---
+
+### Phase 4 — Hybrid Crossover Structural Pruning
+
+**ILR Importance Scoring** (composite, dimension-consistent):
+```
+ILR(ch) = [0.6 × RMS_activation + 0.4 × filter_L1_norm + 0.2 × Frobenius_norm] / 1.2
+```
+
+**Hybrid Crossover Merging** (per pruned channel):
+1. Collect activations of `keep` and `drop` channels from calibration set
+2. Compute hybrid target (max-pool or adaptive blend of both maps)
+3. Regress new filter weights for `keep` channel to match hybrid target (50-step Adam)
+4. Remove `drop` channel; replace `keep` channel filter with regressed weights
+5. Propagate new channel count to downstream blocks via surgical index slicing
+
+**Phase 4b critical engineering**: bottleneck pruning requires simultaneous resizing of  
+TAM `proj_in` (input dim) and `proj_out` (output dim) linear layers — a structural coupling  
+absent in classification networks. Fixed with concat-index weight slicing:
+```python
+# proj_in: Linear(old_bn_ch → 256) → Linear(new_bn_ch → 256)
+new_pi.weight = nn.Parameter(old_pi.weight.data[:, keep_indices])
+# proj_out[0]: Linear(256 → old_bn_ch) → Linear(256 → new_bn_ch)
+new_po.weight = nn.Parameter(old_po.weight.data[keep_indices])
+```
+
+**Final pruned channel counts (Phase 4a):**  
+enc3: 128→71 · enc4: 256→129 · bottleneck: 512→257 · dec4: 256→129 · dec3: 128→65
+
+---
+
+## Phase 3 — Bias Audit Results
+
+| Subgroup | Finding |
+|----------|---------|
+| Early GA (<20w) | Modestly higher MAE — smaller skull, lower SNR |
+| Mid GA (20–30w) | Best performance — optimal 2nd-trimester imaging window |
+| Late GA (>30w) | Slight degradation — increasing acoustic shadowing |
+| Low image quality (low Laplacian variance) | Higher MAE, consistent with clinical expectation |
+| HC size range | No systematic over- or under-measurement bias |
+
+**Limitation:** HC18 contains no patient demographic metadata (ethnicity, BMI, scanner model). True demographic bias analysis requires multi-centre data.
 
 ---
 
 ## Deployed Application — Feature Overview
 
-Live Streamlit app with four tabs, all models selectable at runtime:
+| Tab | What It Does |
+|-----|--------------|
+| Static Analysis (Phase 0 / 4a) | Single-frame segmentation · GradCAM++ · HC + GA · PDF report |
+| Cine Analysis (Phase 2 / 4b) | Synthetic cine generation (Pseudo-LDDM v2) · temporal consensus · uncertainty · T×T attention · per-frame HC chart · reliability score · PDF report |
+| Head-to-Head Comparison | All 4 models simultaneously · comparison table (HC, Dice, MAE, params, FLOPs, compression) · combined PDF |
+| Model Card | Responsible AI documentation (Mitchell et al. 2019) · bias analysis · regulatory pathway |
 
-### Tab 1 — Static Analysis (Phase 0 / Phase 4a)
-- Upload image or pick demo subject (automatic grayscale + validation)
-- Segmentation overlay (red skull boundary on original image)
-- GradCAM++ heatmap (which regions drove boundary prediction)
-- HC (mm) · GA (weeks + days) · Trimester · Inference latency
-- HIGH / MODERATE / LOW confidence badge
-- Optional: upload ground-truth annotation → live Dice + MAE vs annotation
-- Three-colour overlay (TP=yellow, FP=red, FN=green)
-- Downloadable PDF clinical report (Claude Haiku narrative or rule-based template)
-
-### Tab 2 — Cine Analysis (Phase 2 / Phase 4b)
-- Static frame → synthetic 16-frame cine (Pseudo-LDDM v2) → animated GIF
-- Temporal consensus segmentation (mean probability across 16 frames)
-- Per-frame uncertainty heatmap (inter-frame disagreement visualization)
-- T×T temporal attention weight matrix
-- Per-frame HC stability chart (value ± 1 std band)
-- Reliability score → confidence badge
-- Downloadable cine clinical report PDF
-
-### Tab 3 — Head-to-Head Comparison
-- All four models run simultaneously on the same input
-- 4-column segmentation overlays side by side
-- Comparison table: HC · GA · Dice · MAE · params · FLOPs · compression ratio
-- Combined PDF report (single document for all four variants)
-
-### Tab 4 — Model Card
-- Responsible AI documentation (NIST AI RMF framework)
-- Performance stratified by GA trimester (Early / Mid / Late)
-- Bias analysis: known degradation at <20w (small skull, low SNR)
-- Regulatory pathway information (FDA 510(k), EU IVDR)
-
----
-
-## Key Implementation Details
-
-**HC Computation**  
-Ramanujan's ellipse approximation on the largest connected component of the predicted mask:
-```
-h  = ((a − b) / (a + b))²
-HC = π(a + b) × [1 + (3h) / (10 + √(4 − 3h))]
-```
-Scaled to mm: `HC_px × pixel_spacing_mm × (ORIG_W / INPUT_W)` where `ORIG_W=800` corrects for the 800→384 resize.
-
-**Gestational Age**  
-Hadlock (1984) cubic polynomial: `GA = 8.96 + 0.540(HC/10) − 0.0040(HC/10)² + 0.000399(HC/10)³`, clipped to [10, 42] weeks.
-
-**Reliability Score** (cine mode)  
-`max(0, 1 − std(HC_per_frame) / mean(HC_per_frame))`. Maps to: ≥0.97 → HIGH · ≥0.92 → MODERATE · <0.92 → LOW.
-
-**Input Validation**  
-7 clinical sanity checks (shape, resolution ≥64×64, blank detection, saturation, dynamic range, aspect ratio, Laplacian texture). Non-blocking warnings shown in UI; only hard failures block inference.
-
-**LLM Report Generation**  
-Claude Haiku (Anthropic API) generates structured clinical narrative from HC, GA, confidence, and trimester fields. Falls back to deterministic rule-based template if API key not set.
-
-**Fill Hollow Mask**  
-HC18 annotations are ellipse outlines (rings), not solid regions. `fill_hollow_mask()` flood-fills from the image border and inverts to convert ring → solid disk before training and metric computation.
-
----
-
-## Results
-
-### Model Comparison
-
-| Phase | Dice (%) | IoU (%) | MAE (mm) | RMSE (mm) | Params | Size (MB) |
-|-------|----------|---------|----------|-----------|--------|----------|
-| Phase 0 | 97.75 | — | 1.65 | — | 8.11M | 97.5 |
-| Phase 4a | 97.64 | — | 1.76 | — | 4.57M | 18.3 |
-| Phase 2 | 95.95 | — | 2.10 | — | 8.90M | 35.7 |
-| Phase 4b | 96.00 | — | 2.06 | — | 5.20M | 20.9 |
-
-*Full per-trimester breakdown and figure outputs will be added when training notebooks are uploaded.*
-
-### Compression Summary
-
-| Pruning | Original | Pruned | Δ Params | Δ Dice | Δ MAE |
-|---------|----------|--------|----------|--------|-------|
-| Phase 0 → 4a | 8.11M | 4.57M | **−43.7%** | −0.11pp | +0.11mm |
-| Phase 2 → 4b | 8.90M | 5.20M | **−41.6%** | +0.05pp | −0.04mm |
-
-Phase 4b's accuracy **improves** slightly after pruning — the compression regularizes the backbone without touching the temporal attention module, acting as implicit dropout.
+**LLM integration:** Claude Haiku generates clinical-language PDF reports (calvarium, biometric nomogram, inter-frame concordance). Rule-based template available as fallback.  
+**Input validation:** 7 clinical sanity checks block inference on corrupted input.  
+**Ground-truth upload:** Optional; live Dice + MAE vs annotation with three-colour overlay (TP=yellow, FP=red, FN=green).
 
 ---
 
@@ -320,41 +316,42 @@ fetal-head-clinical-ai/
 ├── .gitignore
 ├── LICENSE
 │
-├── app/                                  ← Deployed Streamlit app (mirrors HF Space)
+├── app/                                    ← Deployed app (mirrors HF Space)
 │   ├── README.md
-│   ├── app.py                            ← 4-tab Streamlit UI
-│   ├── inference.py                      ← Model architectures + inference pipelines
-│   ├── report.py                         ← PDF clinical report (LLM + rule-based)
-│   ├── xai.py                            ← GradCAM++, temporal attention, uncertainty
-│   └── model_card.py                     ← Responsible AI / NIST AI RMF docs
+│   ├── app.py                              ← 4-tab Streamlit UI
+│   ├── inference.py                        ← Model architectures + inference pipelines
+│   ├── report.py                           ← PDF clinical report (LLM + rule-based)
+│   ├── xai.py                              ← GradCAM++, temporal attention, uncertainty
+│   └── model_card.py                       ← Responsible AI documentation
 │
-├── notebooks/                            ← Kaggle training notebooks [to be uploaded]
+├── notebooks/                              ← Google Colab training notebooks
 │   ├── README.md
-│   ├── phase0_residual_unet.ipynb        ← Phase 0: ResUNet + deep supervision
-│   ├── phase1_pseudo_lddm_v2.ipynb       ← Cine synthesis: OU motion + Rician
-│   ├── phase2_temporal_attention.ipynb   ← Phase 2: 3-stage TAM training
-│   ├── phase4_pruning.ipynb              ← Phase 4a/4b: crossover pruning + fine-tune
-│   └── ablation_study.ipynb             ← Config A/B/C ablation
+│   ├── fetal_head_phase0_baseline.ipynb    ← Phase 0: ResUNet + deep supervision
+│   ├── fetal_head_phase1_lddm_v2.ipynb    ← Phase 1: Pseudo-LDDM v2 cine synthesis
+│   ├── fetal_head_phase2_temporal_attention.ipynb  ← Phase 2: 3-stage TAM training
+│   ├── fetal_head_phase3_v2.ipynb          ← Phase 3: XAI + bias audit + governance
+│   ├── fetal_head_phase4a.ipynb            ← Phase 4a: Hybrid Crossover pruning (static)
+│   └── fetal_head_phase4b.ipynb            ← Phase 4b: Hybrid Crossover pruning (temporal)
 │
-├── src/                                  ← Modular Python equivalents
+├── src/                                    ← Modular Python source
 │   ├── models/
-│   │   ├── residual_unet.py              ← ResidualUNetDS (Phase 0/2 backbone)
-│   │   ├── temporal_net.py              ← TemporalFetaSegNet + TAM (Phase 2/4b)
-│   │   └── pruned_unet.py               ← PrunedResidualUNetDS (Phase 4a/4b)
+│   │   ├── residual_unet.py                ← ResidualBlock + ResidualUNetDS
+│   │   ├── temporal_net.py                 ← TemporalAttentionModule + TemporalFetaSegNet
+│   │   └── pruned_unet.py                  ← ILR scoring + HybridCrossoverMerger
 │   ├── data/
-│   │   ├── dataset.py                   ← HC18Dataset + augmentation pipeline
-│   │   └── pseudo_lddm_v2.py            ← Cine generation engine
-│   └── evaluate.py                      ← Dice, MAE, RMSE, R², ablation reporting
+│   │   ├── dataset.py                      ← HC18Dataset + fill_hollow_mask
+│   │   └── pseudo_lddm_v2.py               ← Cine generation engine
+│   └── evaluate.py                         ← Dice, MAE, HC estimation, GA, reliability
 │
 ├── results/
-│   ├── README.md                         ← Full results tables
-│   └── figures/                          ← Segmentation outputs, attention maps
+│   ├── README.md
+│   └── figures/
 │
 ├── data/
-│   └── README.md                         ← HC18 download + preprocessing guide
+│   └── README.md
 │
 └── models/
-    └── README.md                         ← Weights on HF Space (too large for GitHub)
+    └── README.md
 ```
 
 ---
@@ -372,14 +369,11 @@ git clone https://github.com/TarunSadarla2606/fetal-head-clinical-ai.git
 cd fetal-head-clinical-ai
 pip install -r requirements.txt
 
-# Download weights from HuggingFace Space (see models/README.md)
-# Place phase0_model.pth, phase2_model.pth, 4a_best_pruned_ft_v10.pth,
-# 4b_best_pruned_ft_v10.pth in the project root
-
+# Download weights (see models/README.md) to project root, then:
 streamlit run app/app.py
 ```
 
-**Option 3 — Inference only**
+**Option 3 — Inference module directly**
 ```python
 from app.inference import load_phase0, predict_single_frame
 import cv2
@@ -388,7 +382,6 @@ model = load_phase0("phase0_model.pth")
 img   = cv2.imread("ultrasound.png", cv2.IMREAD_GRAYSCALE)
 
 result = predict_single_frame(model, img, pixel_spacing_mm=0.070)
-
 print(f"HC:         {result['hc_mm']:.1f} mm")
 print(f"GA:         {result['ga_str']}")
 print(f"Confidence: {result['confidence_label']}")
@@ -402,18 +395,19 @@ print(f"Latency:    {result['elapsed_ms']:.1f} ms")
 **[HC18 Grand Challenge](https://hc18.grand-challenge.org/)** — van den Heuvel et al., *PLOS ONE* 2018  
 999 training + 335 test fetal head ultrasound images from 551 pregnancies, Radboud University Medical Center, Netherlands.
 
-- Image size: 800×540 px at 0.070 mm/pixel (default)
-- Annotation format: semi-major axis, semi-minor axis, angle (ellipse outline, not solid)
-- GA range: 14–40 weeks (predominantly 2nd trimester)
-- Available on Kaggle: [hc18 dataset](https://www.kaggle.com/datasets/sahliz/hc18)
+| Split | Static (Phase 0) | Temporal cine (Phase 2) |
+|-------|-----------------|------------------------|
+| Train | 799 | 564 clips |
+| Val | 100 | 121 clips |
+| Test | 100 | 121 clips |
+| **Total** | **999** | **806 clips** |
 
-See `data/README.md` for download and preprocessing instructions.
+Annotation: semi-major/minor axis + angle (ellipse ring). `fill_hollow_mask()` converts to solid disk.  
+Available: [Kaggle mirror](https://www.kaggle.com/datasets/sahliz/hc18)
 
 ---
 
 ## Model Weights
-
-Weights are too large for GitHub. All four checkpoints are hosted on the HuggingFace Space:
 
 | File | Size | Phase |
 |------|------|-------|
@@ -430,10 +424,10 @@ See `models/README.md` for programmatic download.
 ## Related Work
 
 **[CNN Structured Pruning — VGG16 (CSCE 5934, UNT)](https://github.com/TarunSadarla2606/cnn-structured-pruning-vgg16)**  
-The hybrid crossover filter synthesis method used in Phase 4 was first developed as a directed research project. This clinical pipeline is its first application to a medical image segmentation model.
+The Hybrid Crossover pruning method used in Phase 4 was first developed here. This clinical pipeline is its first application to a medical image segmentation model.
 
 **[Fetal Head Cine Segmentation — Course Project](https://github.com/TarunSadarla2606/fetal-head-cine-segmentation)** (CSCE 6260, UNT Fall 2025)  
-The predecessor: 3D U-Net + Pseudo-LDDM v1 (sinusoidal motion), Dice 86.17%, MAE 17.25 mm, joint work with Ramyasri Murugesan. This repo is the independent solo continuation.
+Predecessor: 3D U-Net + Pseudo-LDDM v1 (sinusoidal motion), Dice 86.17%, MAE 17.25 mm.
 
 ---
 
@@ -441,11 +435,7 @@ The predecessor: 3D U-Net + Pseudo-LDDM v1 (sinusoidal motion), Dice 86.17%, MAE
 
 ⚠️ **Research prototype. Not FDA-cleared. Not CE-marked. Not for clinical use.**
 
-As a biometric measurement Software as a Medical Device (SaMD), clinical deployment would require:
-- **US:** FDA 510(k) clearance (Class II, 21 CFR Part 892.2050)
-- **EU:** IVDR Class B certification
-
-All HC measurements and GA estimates require verification by a certified sonographer before any clinical decision.
+Classified as **SaMD Class II** under FDA 21 CFR Part 892. Requires FDA 510(k) clearance (US) and IVDR Class B certification (EU) before clinical deployment. All measurements require verification by a certified sonographer.
 
 ---
 
@@ -453,12 +443,14 @@ All HC measurements and GA estimates require verification by a certified sonogra
 
 ```bibtex
 @misc{sadarla2026fetalhead,
-  author    = {Sadarla, Tarun},
-  title     = {Fetal Head Circumference Estimation: Static and Temporal Clinical AI
-               with Synthetic Cine Generation and Structured Pruning},
-  year      = {2026},
-  publisher = {GitHub},
-  url       = {https://github.com/TarunSadarla2606/fetal-head-clinical-ai}
+  author      = {Sadarla, Tarun},
+  title       = {Structural Pruning of Residual U-Net and Temporal Segmentation Models
+                 for Efficient Fetal Head Circumference Estimation in Ultrasound Cine Clips},
+  year        = {2026},
+  institution = {University of North Texas},
+  note        = {MS Artificial Intelligence (Biomedical Concentration).
+                 Directed study: Prof. Russel Pears · Fetal head project: Prof. Xiaohui Yuan},
+  url         = {https://huggingface.co/spaces/TarunSadarla2606/fetal-head-clinical-ai}
 }
 ```
 
@@ -479,5 +471,5 @@ HC18 Dataset:
 
 <div align="center">
   <i>Independent research · MS Artificial Intelligence (Biomedical Concentration) · University of North Texas · 2026</i><br>
-  <i>Tarun Sadarla &nbsp;·&nbsp; <a href="mailto:tarunsadarla26@gmail.com">tarunsadarla26@gmail.com</a> &nbsp;·&nbsp; <a href="https://linkedin.com/in/tarun-sadarla-715026231">LinkedIn</a></i>
+  <i>Tarun Sadarla &nbsp;·&nbsp; <a href="mailto:tarunsadarla26@gmail.com">tarunsadarla26@gmail.com</a> &nbsp;·&nbsp; <a href="https://linkedin.com/in/tarun-sadarla-715026231">LinkedIn</a> &nbsp;·&nbsp; <a href="https://tarunsadarla2606.github.io">Portfolio</a></i>
 </div>
