@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Model weights (hosted on HuggingFace — see models/README.md)
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.safetensors
+
+# Dataset (download via data/README.md)
+data/hc18/
+data/raw/
+data/processed/
+*.npy
+*.npz
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Results (generated locally)
+results/figures/*.png
+results/figures/*.jpg
+results/figures/*.svg
+results/videos/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
