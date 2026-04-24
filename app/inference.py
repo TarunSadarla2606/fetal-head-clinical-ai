@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import time
 import contextlib
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import cv2
@@ -713,7 +713,7 @@ def compute_gt_metrics(
 # ── single-frame inference ────────────────────────────────────────────────────
 
 def predict_single_frame(
-    model:            ResidualUNetDS,
+    model:            Union[ResidualUNetDS, PrunedResidualUNetDS],
     img_gray:         np.ndarray,
     pixel_spacing_mm: float,
     device:           torch.device = DEVICE,

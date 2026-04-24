@@ -358,7 +358,7 @@ def build_xai_panel(
             img_gray,
             result["consensus_mask"],
             np.stack([result["prob_map"]] * N_FRAMES),  # fallback: tile mean
-            result.get("hc_mm", 0) or 0,
+            0.070,  # HC18 default pixel spacing; used for annotation only
         )
 
     return outputs

@@ -14,7 +14,9 @@ pixel_spacing_mm and the HC18 original image width (800px).
 GA computation: Hadlock (1984) cubic polynomial, clipped to [10, 42] weeks.
 """
 
+import csv
 import numpy as np
+from pathlib import Path
 from skimage.measure import label, regionprops
 from typing import Optional, Dict, List
 
@@ -78,8 +80,8 @@ def estimate_hc_mm(
         return None
 
     largest = max(regions, key=lambda r: r.area)
-    a = largest.major_axis_length / 2.0  # semi-major axis (pixels)
-    b = largest.minor_axis_length / 2.0  # semi-minor axis (pixels)
+    a = largest.axis_major_length / 2.0  # semi-major axis (pixels)
+    b = largest.axis_minor_length / 2.0  # semi-minor axis (pixels)
     if a <= 0 or b <= 0:
         return None
 
@@ -148,28 +150,50 @@ def reliability_score(per_frame_hc: List[float]) -> float:
     return float(max(0.0, 1.0 - np.std(hcs) / (np.mean(hcs) + 1e-8)))
 
 
+def load_pixel_spacing_csv(csv_path: Path | str) -> Dict[str, float]:
+    """Load per-image pixel spacings from the HC18 metadata CSV.
+
+    Args:
+        csv_path: Path to training_set_pixel_size_and_HC.csv.
+
+    Returns:
+        Dict mapping image stem (e.g. '001_HC') → pixel_size_mm (float).
+    """
+    spacing: Dict[str, float] = {}
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            stem = Path(row["filename"]).stem
+            spacing[stem] = float(row["pixel_size(mm)"])
+    return spacing
+
+
 def evaluate_predictions(
     pred_masks:       List[np.ndarray],
     gt_masks:         List[np.ndarray],
     pixel_spacing_mm: float = 0.070,
+    pixel_spacings:   Optional[List[float]] = None,
 ) -> Dict[str, float]:
     """Compute full evaluation suite over a list of predictions.
 
     Args:
         pred_masks:       List of predicted binary masks [H, W].
         gt_masks:         List of ground-truth binary masks [H, W].
-        pixel_spacing_mm: Pixel spacing in mm (default 0.070 for HC18).
+        pixel_spacing_mm: Fallback scalar spacing in mm (used when pixel_spacings is None).
+        pixel_spacings:   Per-image pixel spacings in mm. When provided, overrides
+                          pixel_spacing_mm for each image individually. Load from the
+                          HC18 CSV with load_pixel_spacing_csv().
 
     Returns:
         Dict with keys: dice_mean, dice_std, iou_mean, mae_mm, rmse_mm, r2.
     """
     dice_scores, iou_scores, pred_hcs, gt_hcs = [], [], [], []
 
-    for pred, gt in zip(pred_masks, gt_masks):
+    for i, (pred, gt) in enumerate(zip(pred_masks, gt_masks)):
+        ps = pixel_spacings[i] if pixel_spacings is not None else pixel_spacing_mm
         dice_scores.append(dice_coefficient(pred, gt))
         iou_scores.append(iou(pred, gt))
-        ph = estimate_hc_mm(pred, pixel_spacing_mm)
-        gh = estimate_hc_mm(gt,   pixel_spacing_mm)
+        ph = estimate_hc_mm(pred, ps)
+        gh = estimate_hc_mm(gt,   ps)
         if ph is not None and gh is not None:
             pred_hcs.append(ph)
             gt_hcs.append(gh)
