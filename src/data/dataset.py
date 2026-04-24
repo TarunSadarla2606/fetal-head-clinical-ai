@@ -17,13 +17,14 @@ Augmentation (training only, albumentations):
   RandomBrightnessContrast(p=0.3)
 """
 
+import csv
 import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 from sklearn.model_selection import train_test_split
-from typing import Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List
 
 INPUT_H = 256
 INPUT_W = 384
@@ -76,6 +77,23 @@ def load_image_mask(
     return img, mask_solid
 
 
+def load_pixel_spacing_csv(csv_path: Path | str) -> Dict[str, float]:
+    """Load per-image pixel spacings from the HC18 metadata CSV.
+
+    Args:
+        csv_path: Path to training_set_pixel_size_and_HC.csv.
+
+    Returns:
+        Dict mapping image stem (e.g. '001_HC') → pixel_size_mm (float).
+    """
+    spacing: Dict[str, float] = {}
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            stem = Path(row["filename"]).stem
+            spacing[stem] = float(row["pixel_size(mm)"])
+    return spacing
+
+
 class HC18Dataset(Dataset):
     """PyTorch Dataset for the HC18 fetal head circumference challenge.
 
@@ -97,6 +115,7 @@ class HC18Dataset(Dataset):
     ) -> None:
         self.image_paths = image_paths
         self.mask_paths  = mask_paths
+        self.stems       = [p.stem for p in image_paths]
         self.augment     = augment
         self.input_h     = input_h
         self.input_w     = input_w
@@ -119,26 +138,27 @@ class HC18Dataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_paths)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (image, mask) tensors, both [1, H, W] float32 in [0, 1]."""
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
+        """Return (image, mask, stem) — tensors [1,H,W] float32, stem is filename without extension."""
         img, mask = load_image_mask(
             self.image_paths[idx], self.mask_paths[idx],
             self.input_h, self.input_w,
         )
+        stem = self.stems[idx]
 
         if self.augment:
             aug = self._aug(image=img, mask=mask)
             # ToTensorV2 already produced tensors; add channel dim to mask
             img_t  = aug["image"].float()                          # [1, H, W]
             mask_t = aug["mask"].unsqueeze(0).float()              # [1, H, W]
-            return img_t, mask_t
+            return img_t, mask_t, stem
 
         # /255 normalisation matching training (A.Normalize mean=0, std=1, max=255)
         img_norm = img.astype(np.float32) / 255.0
 
         img_t  = torch.from_numpy(img_norm).unsqueeze(0)          # [1, H, W]
         mask_t = torch.from_numpy((mask > 127).astype(np.float32)).unsqueeze(0)
-        return img_t, mask_t
+        return img_t, mask_t, stem
 
 
 def build_loaders(
