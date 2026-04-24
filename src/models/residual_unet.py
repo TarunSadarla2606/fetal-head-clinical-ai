@@ -10,7 +10,7 @@ Params: 8.11M (base_ch=32). Input: [B, 1, 256, 384] per-image z-score normalised
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple
 
 
 class ResidualBlock(nn.Module):
@@ -157,7 +157,9 @@ class BoundaryWeightedDiceLoss(nn.Module):
             [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
             dtype=torch.float32, device=target.device,
         ).view(1, 1, 3, 3) / 8.0
-        edges    = F.conv2d(target.unsqueeze(1), kernel, padding=1).squeeze()
+        # Ensure exactly 4D [B, 1, H, W] — unsqueeze only if target is 3D [B, H, W]
+        target_4d = target if target.dim() == 4 else target.unsqueeze(1)
+        edges     = F.conv2d(target_4d.float(), kernel, padding=1)
         edge_mask = (edges.abs() > 0.1).float()
         weights   = 1.0 + self.boundary_weight * edge_mask.view(-1)
 

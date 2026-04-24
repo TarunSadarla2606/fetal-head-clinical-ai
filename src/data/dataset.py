@@ -5,10 +5,11 @@ fill_hollow_mask() converts ring annotations to solid disks via border
 flood-fill + inversion before any training or metric computation.
 
 Dataset splits (reproducible, random_state=42):
-  Static  (Phase 0): 799 train / 100 val / 100 test  (from 999 total, 80/10/10)
+  Static  (Phase 0): 70/15/15 split — test_size=0.15 then test_size=0.176
   Temporal (Phase 2): 564 train / 121 val / 121 test  (from 806 clips)
 
-Per-image z-score normalisation is applied (not global mean/std).
+Normalisation: pixel values divided by 255 (A.Normalize mean=0, std=1, max_pixel_value=255)
+matching the phase0 notebook training configuration.
 
 Augmentation (training only, albumentations):
   HorizontalFlip(p=0.5), VerticalFlip(p=0.5), Rotate(limit=45, p=0.7),
@@ -111,6 +112,8 @@ class HC18Dataset(Dataset):
                 A.GaussNoise(p=0.2),
                 A.GaussianBlur(p=0.2),
                 A.RandomBrightnessContrast(p=0.3),
+                A.Normalize(mean=0.0, std=1.0, max_pixel_value=255.0),
+                ToTensorV2(),
             ])
 
     def __len__(self) -> int:
@@ -125,12 +128,13 @@ class HC18Dataset(Dataset):
 
         if self.augment:
             aug = self._aug(image=img, mask=mask)
-            img, mask = aug["image"], aug["mask"]
+            # ToTensorV2 already produced tensors; add channel dim to mask
+            img_t  = aug["image"].float()                          # [1, H, W]
+            mask_t = aug["mask"].unsqueeze(0).float()              # [1, H, W]
+            return img_t, mask_t
 
-        # Per-image z-score normalisation
-        img_f = img.astype(np.float32)
-        mean, std = img_f.mean(), img_f.std()
-        img_norm = (img_f - mean) / (std + 1e-5)
+        # /255 normalisation matching training (A.Normalize mean=0, std=1, max=255)
+        img_norm = img.astype(np.float32) / 255.0
 
         img_t  = torch.from_numpy(img_norm).unsqueeze(0)          # [1, H, W]
         mask_t = torch.from_numpy((mask > 127).astype(np.float32)).unsqueeze(0)
@@ -145,22 +149,22 @@ def build_loaders(
     input_w: int = INPUT_W,
     seed: int = SEED,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Build train / val / test DataLoaders for HC18 (80/10/10 split).
+    """Build train / val / test DataLoaders for HC18 (70/15/15 split).
 
     Args:
-        root: HC18 dataset root (must contain training_set/ subdirectory).
+        root: HC18 dataset root (must contain 'archive (4)/training_set/training_set/' subdirectory).
 
     Returns:
         (train_loader, val_loader, test_loader)
     """
     root = Path(root)
-    img_dir  = root / "training_set"
+    img_dir  = root / "archive (4)" / "training_set" / "training_set"
     all_imgs  = sorted(img_dir.glob("*_HC.png"))
     all_masks = [p.parent / (p.stem + "_Annotation.png") for p in all_imgs]
 
     indices = list(range(len(all_imgs)))
-    train_idx, temp_idx = train_test_split(indices, test_size=0.2,  random_state=seed)
-    val_idx,  test_idx  = train_test_split(temp_idx, test_size=0.5, random_state=seed)
+    train_idx, temp_idx = train_test_split(indices, test_size=0.15,  random_state=seed)
+    val_idx,  test_idx  = train_test_split(temp_idx, test_size=0.176, random_state=seed)
 
     def _make(idx: list, augment: bool) -> DataLoader:
         ds = HC18Dataset(
