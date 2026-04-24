@@ -1,0 +1,29 @@
+[project]
+name = "fetal-head-clinical-ai"
+version = "1.0.0"
+description = "Automated fetal head circumference measurement from ultrasound using pruned residual U-Nets with temporal attention"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Tarun Sadarla", email = "tarunsadarla26@gmail.com" }]
+requires-python = ">=3.11"
+keywords = [
+    "medical-imaging", "ultrasound", "fetal", "segmentation",
+    "pytorch", "unet", "model-pruning", "gestational-age"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

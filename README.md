@@ -2,8 +2,9 @@
 
 **Automated HC measurement · Gestational age estimation · Structural pruning compression · Temporal uncertainty quantification · Clinical report generation**
 
+[![Tests](https://github.com/TarunSadarla2606/fetal-head-clinical-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/TarunSadarla2606/fetal-head-clinical-ai/actions/workflows/ci.yml)
 [![HuggingFace Space](https://img.shields.io/badge/🤗-Live%20Demo-yellow)](https://huggingface.co/spaces/TarunSadarla2606/fetal-head-clinical-ai)
-[![Python](https://img.shields.io/badge/Python-3.10-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-orange)](https://pytorch.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-deployed-red)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -138,7 +139,7 @@ The B→C gap (+13.5pp Dice, −17.3mm MAE) confirms the TAM is load-bearing: wi
 ### Phase 0 — Pre-Activation Residual U-Net (base_ch=32)
 
 ```
-Input: [B, 1, 256, 384]  grayscale, per-image z-score normalised
+Input: [B, 1, 256, 384]  grayscale, normalised by dividing by 255
   │
   ├─ enc1: ResidualBlock(1→32)    → [B,  32, 256, 384]
   │  MaxPool(2)                   → [B,  32, 128, 192]
@@ -286,6 +287,9 @@ fetal-head-clinical-ai/
 │   │   ├── dataset.py
 │   │   └── pseudo_lddm_v2.py
 │   └── evaluate.py
+├── tests/
+│   └── test_shapes.py      ← 27 automated tests (pytest)
+├── pyproject.toml
 └── results/
 ```
 
@@ -304,6 +308,12 @@ git clone https://github.com/TarunSadarla2606/fetal-head-clinical-ai.git
 cd fetal-head-clinical-ai
 pip install -r requirements.txt
 streamlit run app/app.py
+```
+
+**Option 2b — Run the test suite**
+```bash
+pip install pytest
+pytest tests/ -v        # 27 tests, all should pass
 ```
 
 **Option 3 — Inference module directly**
