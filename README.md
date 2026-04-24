@@ -376,4 +376,4 @@ Classified as SaMD Class II under FDA 21 CFR Part 892. Requires FDA 510(k) clear
 ---
 
 *Independent research · MS Artificial Intelligence (Biomedical Concentration) · University of North Texas · 2026*  
-*Tarun Sadarla · tarunsadarla26@gmail.com · [LinkedIn]([https://linkedin.com/in/tarunsadarla](https://www.linkedin.com/in/tarun-sadarla-715026231/)) · [Portfolio](https://tarunsadarla2606.github.io)*
+*Tarun Sadarla · tarunsadarla26@gmail.com · [LinkedIn]((https://www.linkedin.com/in/tarun-sadarla-715026231/)) · [Portfolio](https://tarunsadarla2606.github.io)*
