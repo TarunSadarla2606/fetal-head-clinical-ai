@@ -26,7 +26,7 @@ jobs:
         run: pip install fastapi uvicorn httpx pytest pytest-asyncio
       - name: Run integration tests
         run: |
-          if [ -d "tests/integration" ]; then
+          if find tests/integration -maxdepth 2 -name "test_*.py" | grep -q .; then
             pytest tests/integration/ -v --tb=short
           else
             echo "No integration tests yet — will be added in Batch 1"

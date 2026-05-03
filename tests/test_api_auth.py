@@ -4,8 +4,8 @@ from __future__ import annotations
 import io
 
 import numpy as np
-from PIL import Image
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.api.main import app
 

@@ -53,7 +53,7 @@ app.add_middleware(
 )
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── helpers ─────────────────────────────────────────────────────────────────────────
 
 def _decode_upload(data: bytes) -> np.ndarray:
     """Decode uploaded image bytes to a grayscale uint8 numpy array."""
@@ -69,7 +69,8 @@ def _encode_png_b64(arr: np.ndarray) -> str:
     return base64.b64encode(buf.tobytes()).decode()
 
 
-# ── routes ────────────────────────────────────────────────────────────────────
+# ── routes ─────────────────────────────────────────────────────────────────────────
+
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 def health() -> HealthResponse:
@@ -131,7 +132,7 @@ def infer(
     )
 
     # 5. Encode outputs
-    mask_b64    = _encode_png_b64(result["mask"] * 255)
+    mask_b64 = _encode_png_b64(result["mask"] * 255)
     overlay_b64 = _encode_png_b64(result["overlay"])
 
     return InferResponse(

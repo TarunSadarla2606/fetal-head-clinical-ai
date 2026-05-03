@@ -6,8 +6,8 @@ import io
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-from PIL import Image
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.api.main import app
 
@@ -21,22 +21,22 @@ def _png_bytes(h: int = 256, w: int = 256) -> bytes:
 
 
 def _mock_prediction() -> dict:
-    mask    = np.zeros((256, 384), dtype=np.uint8)
+    mask = np.zeros((256, 384), dtype=np.uint8)
     overlay = np.zeros((256, 384, 3), dtype=np.uint8)
     return {
-        "mask":             mask,
-        "prob_map":         np.zeros((256, 384), dtype=np.float32),
-        "overlay":          overlay,
-        "hc_mm":            274.3,
-        "ga_str":           "28w 1d",
-        "ga_weeks":         28.14,
-        "trimester":        "Mid (20–30w)",
-        "reliability":      0.95,
-        "hc_std_mm":        0.8,
+        "mask": mask,
+        "prob_map": np.zeros((256, 384), dtype=np.float32),
+        "overlay": overlay,
+        "hc_mm": 274.3,
+        "ga_str": "28w 1d",
+        "ga_weeks": 28.14,
+        "trimester": "Mid (20–30w)",
+        "reliability": 0.95,
+        "hc_std_mm": 0.8,
         "confidence_label": "HIGH CONFIDENCE",
         "confidence_color": "#16a34a",
-        "elapsed_ms":       42.5,
-        "mode":             "single_frame",
+        "elapsed_ms": 42.5,
+        "mode": "single_frame",
     }
 
 
@@ -45,9 +45,13 @@ def _mock_validation_pass() -> dict:
         "valid": True,
         "warnings": [],
         "checks": {
-            "shape": True, "resolution": True, "not_blank": True,
-            "not_saturated": True, "dynamic_range": True,
-            "aspect_ratio": True, "has_texture": True,
+            "shape": True,
+            "resolution": True,
+            "not_blank": True,
+            "not_saturated": True,
+            "dynamic_range": True,
+            "aspect_ratio": True,
+            "has_texture": True,
         },
     }
 
@@ -151,9 +155,14 @@ def test_infer_ood_flag_true_when_validation_fails():
         "warnings": ["Image appears to be blank."],
         "checks": {"not_blank": False},
     }
-    with patch("app.api.model_manager.get_model", return_value=mock_model), \
-         patch("app.api.inference_wrapper.validate_input", return_value=fail_val), \
-         patch("app.api.inference_wrapper.predict_single_frame", return_value=_mock_prediction()):
+    with (
+        patch("app.api.model_manager.get_model", return_value=mock_model),
+        patch("app.api.inference_wrapper.validate_input", return_value=fail_val),
+        patch(
+            "app.api.inference_wrapper.predict_single_frame",
+            return_value=_mock_prediction(),
+        ),
+    ):
         data = client.post(
             "/infer",
             data={"model_variant": "phase0"},

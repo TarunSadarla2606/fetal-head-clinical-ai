@@ -13,9 +13,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Environment variables pointing to each model's weight file on disk.
 _WEIGHT_ENVS: dict[str, str] = {
-    "phase0":  "WEIGHT_PHASE0",
+    "phase0": "WEIGHT_PHASE0",
     "phase4a": "WEIGHT_PHASE4A",
-    "phase2":  "WEIGHT_PHASE2",
+    "phase2": "WEIGHT_PHASE2",
     "phase4b": "WEIGHT_PHASE4B",
 }
 
@@ -43,9 +43,9 @@ def get_model(variant: str) -> object | None:
         from inference import load_phase0, load_phase4a, load_phase2, load_phase4b  # noqa: PLC0415
 
         loaders = {
-            "phase0":  load_phase0,
+            "phase0": load_phase0,
             "phase4a": load_phase4a,
-            "phase2":  load_phase2,
+            "phase2": load_phase2,
             "phase4b": load_phase4b,
         }
         log.info("Loading %s from %s", variant, weight_path)
