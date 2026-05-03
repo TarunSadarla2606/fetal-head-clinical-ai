@@ -23,6 +23,25 @@ _WEIGHT_ENVS: dict[str, str] = {
 _cache: dict[str, object] = {}
 
 
+def _find_weight_path(variant: str) -> str:
+    """Scan common directories for a .pth file whose name contains *variant*."""
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    search_dirs = [
+        repo_root,
+        Path.cwd(),
+        repo_root / "models",
+        repo_root / "weights",
+    ]
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        for pth_file in sorted(search_dir.glob("*.pth")):
+            if variant.lower() in pth_file.name.lower():
+                log.info("Auto-detected weight file for %s: %s", variant, pth_file)
+                return str(pth_file)
+    return ""
+
+
 def get_model(variant: str) -> object | None:
     """Return cached model for *variant*, loading it on first call.
 
@@ -35,9 +54,12 @@ def get_model(variant: str) -> object | None:
     if not env_key:
         raise ValueError(f"Unknown model variant: {variant!r}")
 
-    weight_path = os.getenv(env_key, "")
+    weight_path = os.getenv(env_key, "") or _find_weight_path(variant)
     if not weight_path or not Path(weight_path).exists():
-        log.warning("Weight file for %s not found (env %s=%r)", variant, env_key, weight_path)
+        log.warning(
+            "Weight file for %s not found (env %s=%r, auto-detect returned %r)",
+            variant, env_key, os.getenv(env_key, ""), weight_path,
+        )
         return None
 
     try:
@@ -67,7 +89,7 @@ def available_variants() -> list[str]:
     """Return variant names whose weight files exist on disk."""
     result = []
     for variant, env_key in _WEIGHT_ENVS.items():
-        path = os.getenv(env_key, "")
+        path = os.getenv(env_key, "") or _find_weight_path(variant)
         if path and Path(path).exists():
             result.append(variant)
     return result
