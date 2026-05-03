@@ -62,11 +62,13 @@ app.add_middleware(
 
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────
 def _decode_upload(data: bytes) -> np.ndarray:
+    """Decode uploaded image bytes to a grayscale uint8 numpy array."""
     img = Image.open(io.BytesIO(data)).convert("L")
     return np.array(img)
 
 
 def _encode_png_b64(arr: np.ndarray) -> str:
+    """Encode a uint8 numpy array as a base64 PNG string."""
     ok, buf = cv2.imencode(".png", arr)
     if not ok:
         raise RuntimeError("PNG encode failed")
@@ -76,6 +78,7 @@ def _encode_png_b64(arr: np.ndarray) -> str:
 # ── routes ─────────────────────────────────────────────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 def health() -> HealthResponse:
+    """Return API status, version, available models, and compute device."""
     import torch  # deferred so tests without torch skip this safely
 
     return HealthResponse(
@@ -91,11 +94,12 @@ def list_demo_subjects() -> dict:
     """Return sorted list of image filenames in the demo_subjects directory."""
     if not _DEMO_DIR.is_dir():
         return {"files": []}
-    files = sorted(
-        f.name for f in _DEMO_DIR.iterdir()
+    names = [
+        f.name
+        for f in _DEMO_DIR.iterdir()
         if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
-    )
-    return {"files": files}
+    ]
+    return {"files": sorted(names)}
 
 
 @app.get("/demo/{filename}", tags=["Demo"])

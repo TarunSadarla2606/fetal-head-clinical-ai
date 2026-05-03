@@ -58,7 +58,10 @@ def get_model(variant: str) -> object | None:
     if not weight_path or not Path(weight_path).exists():
         log.warning(
             "Weight file for %s not found (env %s=%r, auto-detect returned %r)",
-            variant, env_key, os.getenv(env_key, ""), weight_path,
+            variant,
+            env_key,
+            os.getenv(env_key, ""),
+            weight_path,
         )
         return None
 
