@@ -94,11 +94,7 @@ def list_demo_subjects() -> dict:
     """Return sorted list of image filenames in the demo_subjects directory."""
     if not _DEMO_DIR.is_dir():
         return {"files": []}
-    names = [
-        f.name
-        for f in _DEMO_DIR.iterdir()
-        if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
-    ]
+    names = [f.name for f in _DEMO_DIR.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTS]
     return {"files": sorted(names)}
 
 
