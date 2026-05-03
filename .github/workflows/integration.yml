@@ -1,0 +1,33 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "app/api/**"
+      - "tests/integration/**"
+      - "requirements.txt"
+
+jobs:
+  api-integration:
+    name: API Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU-only torch
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install project requirements
+        run: pip install -r requirements.txt
+      - name: Install API extras
+        run: pip install fastapi uvicorn httpx pytest pytest-asyncio
+      - name: Run integration tests
+        run: |
+          if find tests/integration -maxdepth 2 -name "test_*.py" | grep -q .; then
+            pytest tests/integration/ -v --tb=short
+          else
+            echo "No integration tests yet — will be added in Batch 1"
+          fi

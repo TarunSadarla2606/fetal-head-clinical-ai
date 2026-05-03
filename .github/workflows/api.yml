@@ -1,0 +1,59 @@
+name: API CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+# Lint and test scope:
+#   Lint : app/api/ + new test files only (existing Streamlit code linted in separate cleanup PR)
+#   Tests: full tests/ directory (existing shape tests + new API tests)
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff check (API + new tests)
+        run: |
+          ruff check \
+            app/api/ \
+            tests/conftest.py \
+            tests/test_ci_smoke.py \
+            tests/test_api_health.py \
+            tests/test_api_auth.py \
+            tests/test_api_infer_mock.py
+      - name: Ruff format check (API + new tests)
+        run: |
+          ruff format --check \
+            app/api/ \
+            tests/conftest.py \
+            tests/test_ci_smoke.py \
+            tests/test_api_health.py \
+            tests/test_api_auth.py \
+            tests/test_api_infer_mock.py
+
+  test:
+    name: Tests (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install CPU-only torch (fast CI)
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install project requirements
+        run: pip install -r requirements.txt
+      - name: Install test extras
+        run: pip install pytest pytest-cov
+      - name: Run tests
+        run: pytest tests/ -v --tb=short -m "not slow" --cov=app --cov-report=term-missing

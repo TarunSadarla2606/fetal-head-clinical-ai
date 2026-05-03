@@ -1,0 +1,31 @@
+/* Hide Streamlit chrome elements that look out of place inside the clinical iframe wrapper */
+#MainMenu          { visibility: hidden; }
+footer             { visibility: hidden; }
+header             { visibility: hidden; }
+.stDeployButton    { display: none !important; }
+
+/* Tighten top padding — the iframe wrapper already provides visual spacing */
+.block-container   { padding-top: 1rem !important; }
+
+/* Match sidebar background to the off-white of the clinical wrapper */
+[data-testid="stSidebar"] > div:first-child {
+  background-color: #F8FAFB;
+  border-right: 1px solid #E2E8F0;
+}
+
+/* Primary button teal to match brand */
+.stButton > button {
+  background-color: #0D7680 !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 6px !important;
+}
+.stButton > button:hover {
+  background-color: #0a6068 !important;
+}
+
+/* Tab active indicator teal */
+[data-baseweb="tab"][aria-selected="true"] {
+  border-bottom-color: #0D7680 !important;
+  color: #0D7680 !important;
+}

@@ -19,9 +19,18 @@ matplotlib>=3.7.0
 # Report generation
 reportlab>=4.0.0
 
-# LLM integration (optional)
+# LLM integration
 anthropic>=0.20.0
 
 # Utilities
 tqdm>=4.65.0
 huggingface_hub>=0.20.0
+
+# API server (Batch 1)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Testing
+httpx>=0.27.0
+pytest-asyncio>=0.23.0
