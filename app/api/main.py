@@ -24,6 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
+from app.inference import N_FRAMES, TemporalFetaSegNet
+
 from . import inference_wrapper, model_manager
 from .deps import verify_api_key
 from .schemas import HealthResponse, InferResponse, ModelVariant, ValidationResult
@@ -100,7 +102,11 @@ def list_demo_subjects() -> dict:
     """Return sorted list of image filenames in the demo_subjects directory."""
     if not _DEMO_DIR.is_dir():
         return {"files": []}
-    names = [f.name for f in _DEMO_DIR.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTS]
+    names = [
+        f.name
+        for f in _DEMO_DIR.iterdir()
+        if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
+    ]
     return {"files": sorted(names)}
 
 
@@ -135,12 +141,10 @@ def infer(
 ) -> InferResponse:
     """Run the selected model on a single ultrasound frame and return HC + GA.
 
-    Temporal models (phase2, phase4b) accept single-frame input: the frame is
-    tiled to N_FRAMES internally so the cine-loop architecture can be exercised
-    without a full video clip.
+    Temporal models (phase2, phase4b) accept single-frame input by tiling the
+    frame to N_FRAMES so the cine-loop architecture can be exercised without a
+    full video clip.
     """
-    from app.inference import TemporalFetaSegNet  # noqa: PLC0415
-
     model = model_manager.get_model(model_variant)
     if model is None:
         raise HTTPException(
@@ -159,10 +163,9 @@ def infer(
 
     val_result = inference_wrapper.validate_input(img_gray)
 
-    # Temporal models (TemporalFetaSegNet) expect a 5D clip [B, T, C, H, W].
-    # Tile the single uploaded frame to N_FRAMES so they work with single-image input.
+    # Temporal models expect a 5-D clip [B, T, C, H, W]. Tile the single frame
+    # so single-image demo subjects work with phase2 and phase4b.
     if isinstance(model, TemporalFetaSegNet):
-        from app.inference import N_FRAMES  # noqa: PLC0415
         result = inference_wrapper.predict_cine_clip(
             model=model,
             frames=[img_gray] * N_FRAMES,
