@@ -21,9 +21,20 @@ classifiers = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "app"]
 addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests that load model weights or run inference (deselect with -m 'not slow')",
+    "integration: marks tests that require a running FastAPI server",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # allow assert in tests
