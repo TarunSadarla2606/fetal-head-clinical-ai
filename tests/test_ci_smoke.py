@@ -1,8 +1,7 @@
 """Batch 0 smoke tests — no model weights required, fast CI."""
 
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 
