@@ -1,4 +1,5 @@
 """Batch 1: /infer endpoint tests with mocked model — no weights required."""
+
 from __future__ import annotations
 
 import base64
@@ -63,14 +64,8 @@ def _patched_client():
     mock_model = MagicMock()
     return (
         patch("app.api.model_manager.get_model", return_value=mock_model),
-        patch(
-            "app.api.inference_wrapper.predict_single_frame",
-            return_value=_mock_prediction(),
-        ),
-        patch(
-            "app.api.inference_wrapper.validate_input",
-            return_value=_mock_validation_pass(),
-        ),
+        patch("app.api.inference_wrapper.predict_single_frame", return_value=_mock_prediction()),
+        patch("app.api.inference_wrapper.validate_input", return_value=_mock_validation_pass()),
     )
 
 
@@ -164,10 +159,7 @@ def test_infer_ood_flag_true_when_validation_fails():
     with (
         patch("app.api.model_manager.get_model", return_value=mock_model),
         patch("app.api.inference_wrapper.validate_input", return_value=fail_val),
-        patch(
-            "app.api.inference_wrapper.predict_single_frame",
-            return_value=_mock_prediction(),
-        ),
+        patch("app.api.inference_wrapper.predict_single_frame", return_value=_mock_prediction()),
     ):
         data = client.post(
             "/infer",

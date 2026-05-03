@@ -1,4 +1,5 @@
 """FastAPI dependencies: API-key verification."""
+
 from __future__ import annotations
 
 import os

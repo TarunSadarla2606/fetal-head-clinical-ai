@@ -1,4 +1,5 @@
 """Lazy model loading and cache for the FastAPI inference API."""
+
 from __future__ import annotations
 
 import logging
@@ -36,12 +37,7 @@ def get_model(variant: str) -> object | None:
 
     weight_path = os.getenv(env_key, "")
     if not weight_path or not Path(weight_path).exists():
-        log.warning(
-            "Weight file for %s not found (env %s=%r)",
-            variant,
-            env_key,
-            weight_path,
-        )
+        log.warning("Weight file for %s not found (env %s=%r)", variant, env_key, weight_path)
         return None
 
     try:

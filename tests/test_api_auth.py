@@ -1,4 +1,5 @@
 """Batch 1: API key authentication tests — no model weights required."""
+
 from __future__ import annotations
 
 import io

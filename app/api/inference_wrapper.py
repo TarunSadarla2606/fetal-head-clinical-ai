@@ -3,6 +3,7 @@
 Import from here inside API routes so that tests can patch
 ``app.api.inference_wrapper.*`` without fighting with import-time caching.
 """
+
 from app.inference import (  # noqa: F401
     estimate_hc_mm,
     hadlock_ga,

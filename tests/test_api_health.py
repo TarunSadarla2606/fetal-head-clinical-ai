@@ -1,4 +1,5 @@
 """Batch 1: /health endpoint tests — no model weights required."""
+
 from fastapi.testclient import TestClient
 
 from app.api.main import app
