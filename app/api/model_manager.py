@@ -45,10 +45,10 @@ def get_model(variant: str) -> object | None:
         return None
 
     try:
-        from inference import (  # noqa: PLC0415
+        from app.inference import (  # noqa: PLC0415
             load_phase0,
-            load_phase4a,
             load_phase2,
+            load_phase4a,
             load_phase4b,
         )
 
