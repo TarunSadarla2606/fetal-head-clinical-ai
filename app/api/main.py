@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
 from app.inference import N_FRAMES, TemporalFetaSegNet
+
 from . import inference_wrapper, model_manager
 from .deps import verify_api_key
 from .schemas import HealthResponse, InferResponse, ModelVariant, ValidationResult
