@@ -16,7 +16,7 @@ env/
 .venv/
 
 # Model weights (hosted on HuggingFace — see models/README.md)
-*.pth
+#*.pth
 *.pt
 *.ckpt
 *.h5
