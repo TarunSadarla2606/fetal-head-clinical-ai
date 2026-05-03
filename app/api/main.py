@@ -25,7 +25,6 @@ from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
 from app.inference import N_FRAMES, TemporalFetaSegNet
-
 from . import inference_wrapper, model_manager
 from .deps import verify_api_key
 from .schemas import HealthResponse, InferResponse, ModelVariant, ValidationResult
@@ -102,11 +101,7 @@ def list_demo_subjects() -> dict:
     """Return sorted list of image filenames in the demo_subjects directory."""
     if not _DEMO_DIR.is_dir():
         return {"files": []}
-    names = [
-        f.name
-        for f in _DEMO_DIR.iterdir()
-        if f.is_file() and f.suffix.lower() in _IMAGE_EXTS
-    ]
+    names = [f.name for f in _DEMO_DIR.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTS]
     return {"files": sorted(names)}
 
 
