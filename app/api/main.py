@@ -19,9 +19,8 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, sta
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from . import model_manager
+from . import inference_wrapper, model_manager
 from .deps import verify_api_key
-from .inference_wrapper import predict_single_frame, validate_input
 from .schemas import HealthResponse, InferResponse, ModelVariant, ValidationResult
 
 log = logging.getLogger(__name__)
@@ -119,10 +118,10 @@ def infer(
         raise HTTPException(status_code=400, detail=f"Could not decode image: {exc}") from exc
 
     # 3. Input validation / OOD check
-    val_result = validate_input(img_gray)
+    val_result = inference_wrapper.validate_input(img_gray)
 
     # 4. Inference
-    result = predict_single_frame(
+    result = inference_wrapper.predict_single_frame(
         model=model,
         img_gray=img_gray,
         pixel_spacing_mm=pixel_spacing_mm,
