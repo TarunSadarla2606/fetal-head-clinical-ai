@@ -24,7 +24,12 @@ _cache: dict[str, object] = {}
 
 
 def _find_weight_path(variant: str) -> str:
-    """Scan common directories for a .pth file whose name contains *variant*."""
+    """Scan common directories for a .pth file whose name contains *variant*.
+
+    Also checks the short form (e.g. "4a" for "phase4a") so that filenames
+    like "4a_best_pruned_ft_v10.pth" are matched without the "phase" prefix.
+    """
+    short = variant.replace("phase", "")  # "phase4a" -> "4a", "phase0" -> "0"
     repo_root = Path(__file__).resolve().parent.parent.parent
     search_dirs = [
         repo_root,
@@ -36,7 +41,8 @@ def _find_weight_path(variant: str) -> str:
         if not search_dir.is_dir():
             continue
         for pth_file in sorted(search_dir.glob("*.pth")):
-            if variant.lower() in pth_file.name.lower():
+            name = pth_file.name.lower()
+            if variant.lower() in name or (short and short in name):
                 log.info("Auto-detected weight file for %s: %s", variant, pth_file)
                 return str(pth_file)
     return ""
