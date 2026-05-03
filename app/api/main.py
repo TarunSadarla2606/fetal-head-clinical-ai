@@ -55,6 +55,7 @@ app.add_middleware(
 
 # ── helpers ─────────────────────────────────────────────────────────────────────────
 
+
 def _decode_upload(data: bytes) -> np.ndarray:
     """Decode uploaded image bytes to a grayscale uint8 numpy array."""
     img = Image.open(io.BytesIO(data)).convert("L")
@@ -98,7 +99,10 @@ def infer(
         default=0.2,
         description="mm per pixel from DICOM tag (0028,0030). Default 0.2 ≈ HC18 dataset.",
     ),
-    threshold: float = Form(default=0.5, description="Segmentation probability threshold"),
+    threshold: float = Form(
+        default=0.5,
+        description="Segmentation probability threshold",
+    ),
     _: None = Depends(verify_api_key),
 ) -> InferResponse:
     """Run the selected model on a single ultrasound frame and return HC + GA."""
@@ -118,7 +122,10 @@ def infer(
     try:
         img_gray = _decode_upload(raw_bytes)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not decode image: {exc}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not decode image: {exc}",
+        ) from exc
 
     # 3. Input validation / OOD check
     val_result = validate_input(img_gray)

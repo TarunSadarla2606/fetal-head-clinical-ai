@@ -63,8 +63,14 @@ def _patched_client():
     mock_model = MagicMock()
     return (
         patch("app.api.model_manager.get_model", return_value=mock_model),
-        patch("app.api.inference_wrapper.predict_single_frame", return_value=_mock_prediction()),
-        patch("app.api.inference_wrapper.validate_input", return_value=_mock_validation_pass()),
+        patch(
+            "app.api.inference_wrapper.predict_single_frame",
+            return_value=_mock_prediction(),
+        ),
+        patch(
+            "app.api.inference_wrapper.validate_input",
+            return_value=_mock_validation_pass(),
+        ),
     )
 
 
