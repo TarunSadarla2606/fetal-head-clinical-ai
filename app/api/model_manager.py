@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 import torch
 
@@ -12,7 +11,7 @@ log = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Environment variables that point to each weight file on disk.
+# Environment variables pointing to each model's weight file on disk.
 _WEIGHT_ENVS: dict[str, str] = {
     "phase0":  "WEIGHT_PHASE0",
     "phase4a": "WEIGHT_PHASE4A",
@@ -23,7 +22,7 @@ _WEIGHT_ENVS: dict[str, str] = {
 _cache: dict[str, object] = {}
 
 
-def get_model(variant: str) -> Optional[object]:
+def get_model(variant: str) -> object | None:
     """Return cached model for *variant*, loading it on first call.
 
     Returns None if the weight file is not configured or does not exist.

@@ -1,7 +1,7 @@
 """Pydantic request/response schemas for the FetalScan AI inference API."""
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,9 +22,9 @@ class ValidationResult(BaseModel):
 
 
 class InferResponse(BaseModel):
-    hc_mm: Optional[float] = None
-    ga_str: Optional[str] = None
-    ga_weeks: Optional[float] = None
+    hc_mm: float | None = None
+    ga_str: str | None = None
+    ga_weeks: float | None = None
     trimester: str = "Unknown"
     reliability: float = 0.0
     hc_std_mm: float = 0.0
