@@ -80,7 +80,8 @@ class TestFindWeightPath:
             ("phase4a", "phase4b_model.pth", False),
         ]
         for variant, filename, should_match in test_cases:
-            matches = variant.lower() in filename.lower()
+            short = variant.replace("phase", "")
+            matches = variant.lower() in filename.lower() or (short and short in filename.lower())
             assert matches == should_match, f"{variant!r} vs {filename!r}: expected {should_match}"
 
 

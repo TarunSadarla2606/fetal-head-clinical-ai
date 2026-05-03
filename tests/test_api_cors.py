@@ -86,7 +86,7 @@ class TestCORSPreflightRequests:
 
 class TestCORSVercelPreviewURLs:
     """Vercel generates preview URLs like https://proj-hash-org.vercel.app.
-    These must also be allowed by the wildcard rule.
+    These must also be allowed by the allow_origin_regex rule.
     """
 
     def test_main_vercel_domain_allowed(self):
@@ -94,3 +94,18 @@ class TestCORSVercelPreviewURLs:
         resp = client.get("/health", headers={"Origin": origin})
         acao = resp.headers.get("access-control-allow-origin", "")
         assert acao == origin or acao == "*"
+
+    @pytest.mark.parametrize(
+        "preview_origin",
+        [
+            "https://fetal-head-webapp-git-main-tarunsadarla2606.vercel.app",
+            "https://fetal-head-webapp-abc123def.vercel.app",
+            "https://fetal-head-webapp-tarunsadarla2606s-projects.vercel.app",
+        ],
+    )
+    def test_vercel_preview_urls_allowed_via_regex(self, preview_origin):
+        resp = client.get("/health", headers={"Origin": preview_origin})
+        acao = resp.headers.get("access-control-allow-origin", "")
+        assert acao == preview_origin or acao == "*", (
+            f"Preview URL {preview_origin!r} should be allowed by regex, got ACAO={acao!r}"
+        )
