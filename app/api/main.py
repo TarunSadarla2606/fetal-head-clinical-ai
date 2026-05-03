@@ -2,6 +2,7 @@
 
 Routes
 ------
+GET  /                    Redirect to interactive API docs
 GET  /health              System status, loaded model list, device
 GET  /demo/list           List filenames in demo_subjects directory
 GET  /demo/{filename}     Serve a demo subject image
@@ -20,7 +21,7 @@ import cv2
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
 from . import inference_wrapper, model_manager
@@ -76,6 +77,11 @@ def _encode_png_b64(arr: np.ndarray) -> str:
 
 
 # ── routes ─────────────────────────────────────────────────────────────────────────────────────
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/api/docs")
+
+
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 def health() -> HealthResponse:
     """Return API status, version, available models, and compute device."""
