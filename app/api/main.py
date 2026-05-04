@@ -2,12 +2,15 @@
 
 Routes
 ------
-GET  /                    Redirect to interactive API docs
-GET  /health              System status, loaded model list, device
-GET  /demo/list           List filenames in demo_subjects directory
-GET  /demo/{filename}     Serve a demo subject image
-POST /infer               Single-frame HC measurement
-GET  /api/openapi.json    OpenAPI schema (auto-generated)
+GET  /                              Redirect to interactive API docs
+GET  /health                        System status, loaded model list, device
+GET  /demo/list                     List filenames in demo_subjects directory
+GET  /demo/{filename}               Serve a demo subject image
+POST /infer                         Single-frame HC measurement
+GET  /findings/{id}/gradcam         GradCAM++ overlay PNG (Batch 5)
+GET  /findings/{id}/uncertainty     MC uncertainty heatmap PNG (Batch 5)
+GET  /findings/{id}/ood             OOD flag + structured reasons JSON (Batch 5)
+GET  /api/openapi.json              OpenAPI schema (auto-generated)
 """
 
 from __future__ import annotations
@@ -19,20 +22,26 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
 from app.inference import N_FRAMES, TemporalFetaSegNet
 
-from . import inference_wrapper, model_manager
+from . import findings_store, inference_wrapper, model_manager, xai_endpoints
 from .deps import verify_api_key
-from .schemas import HealthResponse, InferResponse, ModelVariant, ValidationResult
+from .schemas import (
+    HealthResponse,
+    InferResponse,
+    ModelVariant,
+    OodResponse,
+    ValidationResult,
+)
 
 log = logging.getLogger(__name__)
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 _DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "demo_subjects"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
@@ -179,7 +188,20 @@ def infer(
     mask_b64 = _encode_png_b64(result["mask"] * 255)
     overlay_b64 = _encode_png_b64(result["overlay"])
 
+    finding_id = findings_store.store(
+        img_gray=img_gray,
+        model_variant=model_variant,
+        pixel_spacing_mm=pixel_spacing_mm,
+        threshold=threshold,
+        findings={
+            "hc_mm": result["hc_mm"],
+            "mode": result["mode"],
+            "validation": val_result,
+        },
+    )
+
     return InferResponse(
+        finding_id=finding_id,
         hc_mm=result["hc_mm"],
         ga_str=result["ga_str"],
         ga_weeks=result["ga_weeks"],
@@ -196,3 +218,85 @@ def infer(
         mask_b64=mask_b64,
         overlay_b64=overlay_b64,
     )
+
+
+# ── XAI endpoints (Batch 5) ────────────────────────────────────────────────────
+
+
+def _load_finding_or_404(finding_id: str) -> findings_store.FindingRecord:
+    record = findings_store.get(finding_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Finding {finding_id!r} not found. Findings expire after 1 hour or "
+                "when the LRU cache fills — re-run /infer to generate a fresh ID."
+            ),
+        )
+    return record
+
+
+def _png_response(rgb: np.ndarray) -> Response:
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    ok, buf = cv2.imencode(".png", bgr)
+    if not ok:
+        raise HTTPException(status_code=500, detail="PNG encoding failed")
+    return Response(content=buf.tobytes(), media_type="image/png")
+
+
+@app.get(
+    "/findings/{finding_id}/gradcam",
+    tags=["XAI"],
+    summary="GradCAM++ overlay PNG for a stored finding",
+    responses={200: {"content": {"image/png": {}}}},
+)
+def get_gradcam(
+    finding_id: str,
+    _: None = Depends(verify_api_key),
+) -> Response:
+    record = _load_finding_or_404(finding_id)
+    model = model_manager.get_model(record.model_variant)
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Model '{record.model_variant}' is no longer loaded.",
+        )
+    overlay = xai_endpoints.compute_gradcam(model, record.img_gray)
+    return _png_response(overlay)
+
+
+@app.get(
+    "/findings/{finding_id}/uncertainty",
+    tags=["XAI"],
+    summary="MC uncertainty heatmap PNG for a stored finding",
+    responses={200: {"content": {"image/png": {}}}},
+)
+def get_uncertainty(
+    finding_id: str,
+    _: None = Depends(verify_api_key),
+) -> Response:
+    record = _load_finding_or_404(finding_id)
+    model = model_manager.get_model(record.model_variant)
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Model '{record.model_variant}' is no longer loaded.",
+        )
+    overlay = xai_endpoints.compute_uncertainty(model, record.img_gray)
+    return _png_response(overlay)
+
+
+@app.get(
+    "/findings/{finding_id}/ood",
+    response_model=OodResponse,
+    tags=["XAI"],
+    summary="OOD flag + structured reasons for a stored finding",
+)
+def get_ood(
+    finding_id: str,
+    _: None = Depends(verify_api_key),
+) -> OodResponse:
+    record = _load_finding_or_404(finding_id)
+    val_result = record.findings.get("validation") or inference_wrapper.validate_input(record.img_gray)
+    report = xai_endpoints.analyze_ood(record.img_gray, val_result)
+    return OodResponse(**report)

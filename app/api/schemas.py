@@ -23,6 +23,9 @@ class ValidationResult(BaseModel):
 
 
 class InferResponse(BaseModel):
+    finding_id: str = Field(
+        description="UUID for this inference; pass to /findings/{id}/* for XAI overlays."
+    )
     hc_mm: float | None = None
     ga_str: str | None = None
     ga_weeks: float | None = None
@@ -38,3 +41,15 @@ class InferResponse(BaseModel):
     ood_reasons: list[str]
     mask_b64: str = Field(description="Base64-encoded PNG of the segmentation mask")
     overlay_b64: str = Field(description="Base64-encoded PNG of the HC overlay image")
+
+
+class OodReason(BaseModel):
+    category: str
+    detail: str
+
+
+class OodResponse(BaseModel):
+    ood_flag: bool
+    score: float = Field(ge=0.0, le=1.0)
+    reasons: list[OodReason]
+    stats: dict[str, float]
