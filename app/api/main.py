@@ -24,13 +24,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
+from app.inference import N_FRAMES, TemporalFetaSegNet
+
 from . import inference_wrapper, model_manager
 from .deps import verify_api_key
 from .schemas import HealthResponse, InferResponse, ModelVariant, ValidationResult
 
 log = logging.getLogger(__name__)
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
 _DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "demo_subjects"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
@@ -133,7 +135,12 @@ def infer(
     threshold: float = Form(default=0.5, description="Segmentation probability threshold"),
     _: None = Depends(verify_api_key),
 ) -> InferResponse:
-    """Run the selected model on a single ultrasound frame and return HC + GA."""
+    """Run the selected model on a single ultrasound frame and return HC + GA.
+
+    Temporal models (phase2, phase4b) accept single-frame input by tiling the
+    frame to N_FRAMES so the cine-loop architecture can be exercised without a
+    full video clip.
+    """
     model = model_manager.get_model(model_variant)
     if model is None:
         raise HTTPException(
@@ -152,12 +159,22 @@ def infer(
 
     val_result = inference_wrapper.validate_input(img_gray)
 
-    result = inference_wrapper.predict_single_frame(
-        model=model,
-        img_gray=img_gray,
-        pixel_spacing_mm=pixel_spacing_mm,
-        threshold=threshold,
-    )
+    # Temporal models expect a 5-D clip [B, T, C, H, W]. Tile the single frame
+    # so single-image demo subjects work with phase2 and phase4b.
+    if isinstance(model, TemporalFetaSegNet):
+        result = inference_wrapper.predict_cine_clip(
+            model=model,
+            frames=[img_gray] * N_FRAMES,
+            pixel_spacing_mm=pixel_spacing_mm,
+            threshold=threshold,
+        )
+    else:
+        result = inference_wrapper.predict_single_frame(
+            model=model,
+            img_gray=img_gray,
+            pixel_spacing_mm=pixel_spacing_mm,
+            threshold=threshold,
+        )
 
     mask_b64 = _encode_png_b64(result["mask"] * 255)
     overlay_b64 = _encode_png_b64(result["overlay"])

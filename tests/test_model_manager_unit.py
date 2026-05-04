@@ -70,19 +70,38 @@ class TestFindWeightPath:
             result = model_manager._find_weight_path("phase0")
             assert isinstance(result, str)
 
-    def test_variant_substring_in_filename(self):
-        test_cases = [
+
+class TestMatchesVariant:
+    """Direct tests for the _matches_variant function used by _find_weight_path."""
+
+    @pytest.mark.parametrize(
+        "variant,filename,should_match",
+        [
+            # Full-name matches
             ("phase0", "phase0_model.pth", True),
             ("phase2", "phase2_weights.pth", True),
+            ("phase4a", "phase4a_model.pth", True),
+            ("phase4b", "phase4b_model.pth", True),
+            # Short-form startswith matches (real-world filenames)
             ("phase4a", "4a_best_pruned_ft_v10.pth", True),
             ("phase4b", "4b_best_pruned_ft_v10.pth", True),
+            # Cross-variant negatives
             ("phase0", "phase2_model.pth", False),
+            ("phase2", "phase0_model.pth", False),
             ("phase4a", "phase4b_model.pth", False),
-        ]
-        for variant, filename, should_match in test_cases:
-            short = variant.replace("phase", "")
-            matches = variant.lower() in filename.lower() or (short and short in filename.lower())
-            assert matches == should_match, f"{variant!r} vs {filename!r}: expected {should_match}"
+            ("phase4b", "phase4a_model.pth", False),
+            # Critical bug case: "0" in "v10" must NOT cause phase0 to match a 4a file
+            ("phase0", "4a_best_pruned_ft_v10.pth", False),
+            ("phase0", "4b_best_pruned_ft_v10.pth", False),
+            # Likewise "2" in any version string must not falsely match phase2
+            ("phase2", "4a_best_pruned_ft_v20.pth", False),
+            # Case insensitive
+            ("phase0", "PHASE0_MODEL.PTH", True),
+            ("phase4a", "4A_BEST.PTH", True),
+        ],
+    )
+    def test_matches_variant_cases(self, variant, filename, should_match):
+        assert model_manager._matches_variant(filename, variant) == should_match
 
 
 class TestAvailableVariants:
