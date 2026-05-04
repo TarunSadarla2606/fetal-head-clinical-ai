@@ -53,3 +53,72 @@ class OodResponse(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
     reasons: list[OodReason]
     stats: dict[str, float]
+
+
+# ── Reports (Batch 6) ─────────────────────────────────────────────────────────
+
+
+class CreateReportRequest(BaseModel):
+    """Body for POST /studies/{study_id}/reports.
+
+    Either `finding_id` (preferred — pulls findings from the in-memory
+    findings_store written by /infer) OR an explicit set of biometric values
+    must be provided. The endpoint hydrates from the store first and lets
+    explicit fields override.
+    """
+
+    finding_id: str | None = None
+    patient_name: str
+    study_date: str
+    model: ModelVariant
+    pixel_spacing_mm: float | None = 0.070
+    # explicit overrides — used when no finding_id (synthetic / external data)
+    hc_mm: float | None = None
+    ga_str: str | None = None
+    ga_weeks: float | None = None
+    trimester: str | None = None
+    reliability: float | None = None
+    confidence_label: str | None = None
+    elapsed_ms: float | None = None
+
+
+class SignReportRequest(BaseModel):
+    signed_by: str = Field(min_length=1, max_length=200)
+    signoff_note: str | None = Field(default=None, max_length=2000)
+
+
+class ReportResponse(BaseModel):
+    id: str
+    study_id: str
+    finding_id: str | None
+    patient_name: str
+    study_date: str
+    model: str
+    hc_mm: float | None
+    ga_str: str | None
+    ga_weeks: float | None
+    trimester: str | None
+    reliability: float | None
+    confidence_label: str | None
+    pixel_spacing_mm: float | None
+    elapsed_ms: float | None
+    narrative_p1: str | None
+    narrative_p2: str | None
+    narrative_p3: str | None
+    used_llm: bool
+    is_signed: bool
+    signed_by: str | None
+    signed_at: str | None
+    signoff_note: str | None
+    created_at: str
+
+
+class AuditEntryResponse(BaseModel):
+    id: str
+    report_id: str
+    action: str
+    actor: str | None
+    ip: str | None
+    user_agent: str | None
+    details: str | None
+    timestamp: str

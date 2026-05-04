@@ -48,3 +48,4 @@ results/videos/
 # OS
 .DS_Store
 Thumbs.db
+reports.db

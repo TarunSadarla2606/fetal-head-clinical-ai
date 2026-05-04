@@ -29,7 +29,14 @@ from PIL import Image
 
 from app.inference import N_FRAMES, TemporalFetaSegNet
 
-from . import findings_store, inference_wrapper, model_manager, xai_endpoints
+from . import (
+    findings_store,
+    inference_wrapper,
+    model_manager,
+    reports_db,
+    reports_endpoints,
+    xai_endpoints,
+)
 from .deps import verify_api_key
 from .schemas import (
     HealthResponse,
@@ -41,7 +48,7 @@ from .schemas import (
 
 log = logging.getLogger(__name__)
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 
 _DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "demo_subjects"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
@@ -70,6 +77,11 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Initialise the SQLite reports DB on startup so the first request doesn't
+# race the schema bootstrap.
+reports_db.init_db()
+app.include_router(reports_endpoints.router)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────

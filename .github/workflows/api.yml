@@ -29,7 +29,9 @@ jobs:
             tests/test_ci_smoke.py \
             tests/test_api_health.py \
             tests/test_api_auth.py \
-            tests/test_api_infer_mock.py
+            tests/test_api_infer_mock.py \
+            tests/test_api_xai.py \
+            tests/test_api_reports.py
       - name: Ruff format check (API + new tests)
         run: |
           ruff format --check \
@@ -38,7 +40,9 @@ jobs:
             tests/test_ci_smoke.py \
             tests/test_api_health.py \
             tests/test_api_auth.py \
-            tests/test_api_infer_mock.py
+            tests/test_api_infer_mock.py \
+            tests/test_api_xai.py \
+            tests/test_api_reports.py
 
   test:
     name: Tests (Python 3.11)

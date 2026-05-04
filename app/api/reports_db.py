@@ -1,0 +1,368 @@
+"""SQLite persistence for clinical reports and the audit log.
+
+The schema is intentionally narrow:
+
+  reports     — one row per Report. Stores the snapshot of biometric values
+                used to render the PDF, plus the LLM-authored narrative
+                paragraphs (frozen at create time so re-rendering the PDF is
+                deterministic and free of new LLM calls). Sign-off mutates
+                is_signed / signed_by / signed_at / signoff_note in place.
+
+  audit_log   — append-only history of actions taken on a report (created,
+                viewed, signed). Captures actor name + IP + user-agent so a
+                downstream audit query can reconstruct who did what when.
+
+Reports are keyed by UUID and grouped by an arbitrary study_id string. We
+intentionally do not enforce a foreign key on study_id — studies live in the
+front-end's worklist (demo-001, demo-002, … or upload-derived IDs) and are
+not yet first-class server-side resources.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+DB_PATH = os.environ.get("REPORTS_DB_PATH", "reports.db")
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS reports (
+    id                TEXT PRIMARY KEY,
+    study_id          TEXT NOT NULL,
+    finding_id        TEXT,
+    patient_name      TEXT NOT NULL,
+    study_date        TEXT NOT NULL,
+    model             TEXT NOT NULL,
+    hc_mm             REAL,
+    ga_str            TEXT,
+    ga_weeks          REAL,
+    trimester         TEXT,
+    reliability       REAL,
+    confidence_label  TEXT,
+    pixel_spacing_mm  REAL,
+    elapsed_ms        REAL,
+    narrative_p1      TEXT,
+    narrative_p2      TEXT,
+    narrative_p3      TEXT,
+    used_llm          INTEGER NOT NULL DEFAULT 0,
+    is_signed         INTEGER NOT NULL DEFAULT 0,
+    signed_by         TEXT,
+    signed_at         TEXT,
+    signoff_note      TEXT,
+    created_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reports_study   ON reports(study_id);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          TEXT PRIMARY KEY,
+    report_id   TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    actor       TEXT,
+    ip          TEXT,
+    user_agent  TEXT,
+    details     TEXT,
+    timestamp   TEXT NOT NULL,
+    FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_report ON audit_log(report_id);
+"""
+
+
+@dataclass
+class Report:
+    id: str
+    study_id: str
+    finding_id: str | None
+    patient_name: str
+    study_date: str
+    model: str
+    hc_mm: float | None
+    ga_str: str | None
+    ga_weeks: float | None
+    trimester: str | None
+    reliability: float | None
+    confidence_label: str | None
+    pixel_spacing_mm: float | None
+    elapsed_ms: float | None
+    narrative_p1: str | None
+    narrative_p2: str | None
+    narrative_p3: str | None
+    used_llm: bool
+    is_signed: bool
+    signed_by: str | None
+    signed_at: str | None
+    signoff_note: str | None
+    created_at: str
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "study_id": self.study_id,
+            "finding_id": self.finding_id,
+            "patient_name": self.patient_name,
+            "study_date": self.study_date,
+            "model": self.model,
+            "hc_mm": self.hc_mm,
+            "ga_str": self.ga_str,
+            "ga_weeks": self.ga_weeks,
+            "trimester": self.trimester,
+            "reliability": self.reliability,
+            "confidence_label": self.confidence_label,
+            "pixel_spacing_mm": self.pixel_spacing_mm,
+            "elapsed_ms": self.elapsed_ms,
+            "narrative_p1": self.narrative_p1,
+            "narrative_p2": self.narrative_p2,
+            "narrative_p3": self.narrative_p3,
+            "used_llm": self.used_llm,
+            "is_signed": self.is_signed,
+            "signed_by": self.signed_by,
+            "signed_at": self.signed_at,
+            "signoff_note": self.signoff_note,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
+class AuditEntry:
+    id: str
+    report_id: str
+    action: str
+    actor: str | None
+    ip: str | None
+    user_agent: str | None
+    details: str | None
+    timestamp: str
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "report_id": self.report_id,
+            "action": self.action,
+            "actor": self.actor,
+            "ip": self.ip,
+            "user_agent": self.user_agent,
+            "details": self.details,
+            "timestamp": self.timestamp,
+        }
+
+
+@contextmanager
+def _conn(db_path: str | None = None):
+    path = db_path or DB_PATH
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db(db_path: str | None = None) -> None:
+    with _conn(db_path) as c:
+        c.executescript(_SCHEMA)
+
+
+def _now() -> str:
+    # ISO 8601 with milliseconds in UTC
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _row_to_report(row: sqlite3.Row) -> Report:
+    return Report(
+        id=row["id"],
+        study_id=row["study_id"],
+        finding_id=row["finding_id"],
+        patient_name=row["patient_name"],
+        study_date=row["study_date"],
+        model=row["model"],
+        hc_mm=row["hc_mm"],
+        ga_str=row["ga_str"],
+        ga_weeks=row["ga_weeks"],
+        trimester=row["trimester"],
+        reliability=row["reliability"],
+        confidence_label=row["confidence_label"],
+        pixel_spacing_mm=row["pixel_spacing_mm"],
+        elapsed_ms=row["elapsed_ms"],
+        narrative_p1=row["narrative_p1"],
+        narrative_p2=row["narrative_p2"],
+        narrative_p3=row["narrative_p3"],
+        used_llm=bool(row["used_llm"]),
+        is_signed=bool(row["is_signed"]),
+        signed_by=row["signed_by"],
+        signed_at=row["signed_at"],
+        signoff_note=row["signoff_note"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_audit(row: sqlite3.Row) -> AuditEntry:
+    return AuditEntry(
+        id=row["id"],
+        report_id=row["report_id"],
+        action=row["action"],
+        actor=row["actor"],
+        ip=row["ip"],
+        user_agent=row["user_agent"],
+        details=row["details"],
+        timestamp=row["timestamp"],
+    )
+
+
+def create_report(
+    *,
+    study_id: str,
+    finding_id: str | None,
+    patient_name: str,
+    study_date: str,
+    model: str,
+    hc_mm: float | None,
+    ga_str: str | None,
+    ga_weeks: float | None,
+    trimester: str | None,
+    reliability: float | None,
+    confidence_label: str | None,
+    pixel_spacing_mm: float | None,
+    elapsed_ms: float | None,
+    narrative_p1: str | None,
+    narrative_p2: str | None,
+    narrative_p3: str | None,
+    used_llm: bool,
+    db_path: str | None = None,
+) -> Report:
+    rid = f"rep_{uuid.uuid4().hex[:16]}"
+    created = _now()
+    with _conn(db_path) as c:
+        c.execute(
+            """
+            INSERT INTO reports (
+                id, study_id, finding_id, patient_name, study_date, model,
+                hc_mm, ga_str, ga_weeks, trimester, reliability,
+                confidence_label, pixel_spacing_mm, elapsed_ms,
+                narrative_p1, narrative_p2, narrative_p3, used_llm,
+                is_signed, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                rid,
+                study_id,
+                finding_id,
+                patient_name,
+                study_date,
+                model,
+                hc_mm,
+                ga_str,
+                ga_weeks,
+                trimester,
+                reliability,
+                confidence_label,
+                pixel_spacing_mm,
+                elapsed_ms,
+                narrative_p1,
+                narrative_p2,
+                narrative_p3,
+                int(used_llm),
+                created,
+            ),
+        )
+    return get_report(rid, db_path=db_path)  # type: ignore[return-value]
+
+
+def get_report(report_id: str, db_path: str | None = None) -> Report | None:
+    with _conn(db_path) as c:
+        row = c.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    return _row_to_report(row) if row else None
+
+
+def list_reports_for_study(study_id: str, db_path: str | None = None) -> list[Report]:
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT * FROM reports WHERE study_id = ? ORDER BY created_at DESC",
+            (study_id,),
+        ).fetchall()
+    return [_row_to_report(r) for r in rows]
+
+
+def list_all_reports(db_path: str | None = None) -> list[Report]:
+    with _conn(db_path) as c:
+        rows = c.execute("SELECT * FROM reports ORDER BY created_at DESC").fetchall()
+    return [_row_to_report(r) for r in rows]
+
+
+def sign_report(
+    report_id: str,
+    signed_by: str,
+    signoff_note: str | None,
+    db_path: str | None = None,
+) -> Report | None:
+    signed_at = _now()
+    with _conn(db_path) as c:
+        cur = c.execute(
+            """
+            UPDATE reports
+            SET is_signed = 1, signed_by = ?, signed_at = ?, signoff_note = ?
+            WHERE id = ? AND is_signed = 0
+            """,
+            (signed_by, signed_at, signoff_note, report_id),
+        )
+        if cur.rowcount == 0:
+            return None
+    return get_report(report_id, db_path=db_path)
+
+
+def add_audit(
+    *,
+    report_id: str,
+    action: str,
+    actor: str | None,
+    ip: str | None,
+    user_agent: str | None,
+    details: str | None = None,
+    db_path: str | None = None,
+) -> AuditEntry:
+    aid = f"aud_{uuid.uuid4().hex[:16]}"
+    ts = _now()
+    with _conn(db_path) as c:
+        c.execute(
+            """
+            INSERT INTO audit_log
+                (id, report_id, action, actor, ip, user_agent, details, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (aid, report_id, action, actor, ip, user_agent, details, ts),
+        )
+    return AuditEntry(
+        id=aid,
+        report_id=report_id,
+        action=action,
+        actor=actor,
+        ip=ip,
+        user_agent=user_agent,
+        details=details,
+        timestamp=ts,
+    )
+
+
+def list_audit_for_report(report_id: str, db_path: str | None = None) -> list[AuditEntry]:
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT * FROM audit_log WHERE report_id = ? ORDER BY timestamp ASC",
+            (report_id,),
+        ).fetchall()
+    return [_row_to_audit(r) for r in rows]
+
+
+def clear_all(db_path: str | None = None) -> None:
+    """Test-only: wipe both tables. No-op if the DB doesn't exist."""
+    with _conn(db_path) as c:
+        c.execute("DELETE FROM audit_log")
+        c.execute("DELETE FROM reports")
