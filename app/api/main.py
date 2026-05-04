@@ -297,6 +297,8 @@ def get_ood(
     _: None = Depends(verify_api_key),
 ) -> OodResponse:
     record = _load_finding_or_404(finding_id)
-    val_result = record.findings.get("validation") or inference_wrapper.validate_input(record.img_gray)
+    val_result = record.findings.get("validation") or inference_wrapper.validate_input(
+        record.img_gray
+    )
     report = xai_endpoints.analyze_ood(record.img_gray, val_result)
     return OodResponse(**report)

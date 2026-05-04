@@ -125,8 +125,8 @@ def compute_gradcam(model, img_gray: np.ndarray) -> np.ndarray:
 
         acts = activations[-1].detach()  # [1, C, h, w]
         grads = gradients[-1].detach()
-        grads_sq = grads ** 2
-        grads_cb = grads ** 3
+        grads_sq = grads**2
+        grads_cb = grads**3
         denom = 2 * grads_sq + (acts * grads_cb).sum(dim=(2, 3), keepdim=True) + 1e-8
         alpha = grads_sq / denom
         weights = (alpha * F.relu(grads)).sum(dim=(2, 3), keepdim=True)
@@ -202,9 +202,9 @@ def uncertainty_variance(model, img_gray: np.ndarray, n_samples: int = 8) -> flo
     probs_stack = []
     with torch.no_grad():
         for _ in range(n_samples):
-            noise = torch.from_numpy(
-                rng.normal(0.0, 0.04, base.shape).astype(np.float32)
-            ).to(device)
+            noise = torch.from_numpy(rng.normal(0.0, 0.04, base.shape).astype(np.float32)).to(
+                device
+            )
             logits = backbone(base + noise)
             probs_stack.append(torch.sigmoid(logits).cpu().numpy()[0, 0])
 
@@ -254,33 +254,42 @@ def analyze_ood(img_gray: np.ndarray, prior_validation: dict) -> dict:
 
     # 3. OOD signals beyond the validation pass
     if std_int < 15:
-        reasons.append({
-            "category": "low_contrast",
-            "detail": f"Standard deviation of intensity is very low (std={std_int:.1f}). "
-                      "Real ultrasound frames typically have std ≥ 30.",
-        })
+        reasons.append(
+            {
+                "category": "low_contrast",
+                "detail": f"Standard deviation of intensity is very low (std={std_int:.1f}). "
+                "Real ultrasound frames typically have std ≥ 30.",
+            }
+        )
     if lap_var < 30 and prior_validation.get("checks", {}).get("has_texture", True):
-        reasons.append({
-            "category": "low_texture_borderline",
-            "detail": f"Laplacian variance ({lap_var:.1f}) is below typical ultrasound range (>50).",
-        })
+        reasons.append(
+            {
+                "category": "low_texture_borderline",
+                "detail": f"Laplacian variance ({lap_var:.1f}) is below typical ultrasound range (>50).",
+            }
+        )
     if edge_density < 0.005:
-        reasons.append({
-            "category": "low_edge_density",
-            "detail": f"Edge density ({edge_density:.4f}) is very low — image may be smooth or synthetic.",
-        })
+        reasons.append(
+            {
+                "category": "low_edge_density",
+                "detail": f"Edge density ({edge_density:.4f}) is very low — image may be smooth or synthetic.",
+            }
+        )
     if mean_int < 30 or mean_int > 220:
-        reasons.append({
-            "category": "extreme_brightness",
-            "detail": f"Mean intensity ({mean_int:.1f}) is outside the typical ultrasound range [40, 200].",
-        })
+        reasons.append(
+            {
+                "category": "extreme_brightness",
+                "detail": f"Mean intensity ({mean_int:.1f}) is outside the typical ultrasound range [40, 200].",
+            }
+        )
 
     # 4. Aggregate score: fraction of triggered checks (rough but explainable)
     total_checks = 4
     triggered_extras = sum(
         1
         for r in reasons
-        if r["category"] in {"low_contrast", "low_texture_borderline", "low_edge_density", "extreme_brightness"}
+        if r["category"]
+        in {"low_contrast", "low_texture_borderline", "low_edge_density", "extreme_brightness"}
     )
     extras_score = triggered_extras / total_checks
     base_score = 0.0 if prior_validation.get("valid", True) else 0.5
