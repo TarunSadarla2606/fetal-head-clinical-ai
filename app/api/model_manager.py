@@ -23,13 +23,37 @@ _WEIGHT_ENVS: dict[str, str] = {
 _cache: dict[str, object] = {}
 
 
-def _find_weight_path(variant: str) -> str:
-    """Scan common directories for a .pth file whose name contains *variant*.
+def _matches_variant(filename: str, variant: str) -> bool:
+    """Return True if *filename* should be associated with *variant*.
 
-    Also checks the short form (e.g. "4a" for "phase4a") so that filenames
-    like "4a_best_pruned_ft_v10.pth" are matched without the "phase" prefix.
+    Match rules (in priority order):
+      1. The full variant name appears anywhere in the filename
+         (e.g. ``phase0`` in ``phase0_model.pth``).
+      2. The short form (variant minus the ``phase`` prefix) appears at
+         the START of the filename (e.g. ``4a_best_pruned_ft_v10.pth``
+         matches ``phase4a``).
+
+    The ``startswith`` check on the short form is critical: a substring
+    match like ``"0" in "v10"`` would otherwise cause ``phase0`` to
+    falsely match ``4a_best_pruned_ft_v10.pth`` and then fail to load
+    because the architectures differ.
     """
-    short = variant.replace("phase", "")  # "phase4a" -> "4a", "phase0" -> "0"
+    name = filename.lower()
+    if variant.lower() in name:
+        return True
+    short = variant.replace("phase", "")
+    if short and name.startswith(short):
+        return True
+    return False
+
+
+def _find_weight_path(variant: str) -> str:
+    """Scan common directories for a .pth file matching *variant*.
+
+    Uses :func:`_matches_variant` to decide whether each candidate ``.pth``
+    file belongs to the requested variant. Returns the first match found
+    (alphabetically first) or an empty string if nothing matches.
+    """
     repo_root = Path(__file__).resolve().parent.parent.parent
     search_dirs = [
         repo_root,
@@ -41,8 +65,7 @@ def _find_weight_path(variant: str) -> str:
         if not search_dir.is_dir():
             continue
         for pth_file in sorted(search_dir.glob("*.pth")):
-            name = pth_file.name.lower()
-            if variant.lower() in name or (short and short in name):
+            if _matches_variant(pth_file.name, variant):
                 log.info("Auto-detected weight file for %s: %s", variant, pth_file)
                 return str(pth_file)
     return ""
