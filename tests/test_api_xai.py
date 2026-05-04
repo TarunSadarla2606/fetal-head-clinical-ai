@@ -68,9 +68,18 @@ def _mock_validation_pass() -> dict:
     return {
         "valid": True,
         "warnings": [],
-        "checks": {k: True for k in
-                   ["shape", "resolution", "not_blank", "not_saturated",
-                    "dynamic_range", "aspect_ratio", "has_texture"]},
+        "checks": {
+            k: True
+            for k in [
+                "shape",
+                "resolution",
+                "not_blank",
+                "not_saturated",
+                "dynamic_range",
+                "aspect_ratio",
+                "has_texture",
+            ]
+        },
     }
 
 
