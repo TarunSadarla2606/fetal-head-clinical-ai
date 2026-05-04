@@ -80,6 +80,18 @@ class CreateReportRequest(BaseModel):
     reliability: float | None = None
     confidence_label: str | None = None
     elapsed_ms: float | None = None
+    # ACR/AIUM/ESR-compliant clinical fields (all optional for backwards compat)
+    referring_physician: str | None = None
+    patient_id: str | None = None
+    patient_dob: str | None = None
+    lmp: str | None = None  # ISO date — used for EDD cross-check / GA discordance flag
+    ordering_facility: str | None = None
+    sonographer_name: str | None = None
+    clinical_indication: str | None = None
+    us_approach: Literal["transabdominal", "transvaginal"] | None = None
+    image_quality: Literal["optimal", "suboptimal", "limited"] | None = None
+    pixel_spacing_dicom_derived: bool = False
+    report_mode: Literal["template", "llm"] = "template"
 
 
 class SignReportRequest(BaseModel):
@@ -105,12 +117,29 @@ class ReportResponse(BaseModel):
     narrative_p1: str | None
     narrative_p2: str | None
     narrative_p3: str | None
+    narrative_impression: str | None = None
     used_llm: bool
     is_signed: bool
     signed_by: str | None
     signed_at: str | None
     signoff_note: str | None
     created_at: str
+    # Extended clinical fields
+    referring_physician: str | None = None
+    patient_id: str | None = None
+    patient_dob: str | None = None
+    lmp: str | None = None
+    ordering_facility: str | None = None
+    sonographer_name: str | None = None
+    clinical_indication: str | None = None
+    us_approach: str | None = None
+    image_quality: str | None = None
+    pixel_spacing_dicom_derived: bool = False
+    report_mode: str = "template"
+    accession_number: str | None = None
+    original_image_b64: str | None = None
+    overlay_image_b64: str | None = None
+    gradcam_image_b64: str | None = None
 
 
 class AuditEntryResponse(BaseModel):

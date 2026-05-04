@@ -61,21 +61,27 @@ def _payload(**overrides):
         "reliability": 0.92,
         "confidence_label": "HIGH",
         "elapsed_ms": 412.0,
+        "report_mode": "template",
     }
     base.update(overrides)
     return base
 
 
 def _mock_llm():
-    """Patch the underlying Anthropic call so tests don't hit the network."""
+    """Patch the underlying Anthropic call so tests don't hit the network.
+
+    _llm_static_narrative now returns (p1, p2, p3, impression) — 4 calls.
+    Supply plenty of values for any number of paragraphs.
+    """
     return patch(
         "app.report._call_llm",
         side_effect=[
             "LLM-generated biometric paragraph with HC and GA context.",
             "LLM-generated activation map paragraph mentioning calvarium.",
-            "LLM-generated compression paragraph (only used when pruned).",
+            None,  # p3 (only for pruned models — None triggers rule-based fallback)
+            "LLM-generated impression for the referring physician.",
         ]
-        * 4,  # plenty of return values for any narrative shape
+        * 8,  # enough for any call count
     )
 
 
@@ -83,9 +89,10 @@ def _mock_llm():
 
 
 def test_create_report_persists_row_and_returns_narrative(client, monkeypatch):
+    """LLM mode requires report_mode='llm' + API key."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     with _mock_llm():
-        r = client.post("/studies/study-abc/reports", json=_payload())
+        r = client.post("/studies/study-abc/reports", json=_payload(report_mode="llm"))
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["study_id"] == "study-abc"
@@ -96,6 +103,9 @@ def test_create_report_persists_row_and_returns_narrative(client, monkeypatch):
     assert "biometric" in body["narrative_p1"].lower()
     assert body["is_signed"] is False
     assert body["id"].startswith("rep_")
+    # New fields: accession number and impression
+    assert body["accession_number"] and body["accession_number"].startswith("FHC-")
+    assert body["report_mode"] == "llm"
 
 
 def test_create_report_falls_back_to_template_without_api_key(client, monkeypatch):
@@ -105,6 +115,52 @@ def test_create_report_falls_back_to_template_without_api_key(client, monkeypatc
     body = r.json()
     assert body["used_llm"] is False
     assert body["narrative_p1"]  # rule-based fallback still populates a paragraph
+    assert body["narrative_impression"]  # impression also rule-based
+
+
+def test_create_report_template_mode_ignores_api_key(client, monkeypatch):
+    """report_mode='template' must NOT use the LLM even when API key is set."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    with _mock_llm():
+        r = client.post("/studies/study-abc/reports", json=_payload(report_mode="template"))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["used_llm"] is False  # template mode never calls LLM
+    assert body["report_mode"] == "template"
+
+
+def test_create_report_accession_number_format(client, monkeypatch):
+    """Accession numbers must match FHC-YYYYMMDD-HHMMSS format."""
+    import re
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    r = client.post("/studies/s/reports", json=_payload())
+    assert r.status_code == 201, r.text
+    accession = r.json()["accession_number"]
+    assert accession is not None
+    assert re.match(r"FHC-\d{8}-\d{6}", accession), f"Bad accession format: {accession}"
+
+
+def test_create_report_clinical_fields_persisted(client, monkeypatch):
+    """Referring physician, LMP, clinical indication etc. must survive the round-trip."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    payload = _payload(
+        referring_physician="Dr. Jane Smith",
+        lmp="2025-11-01",
+        clinical_indication="Routine 24-week dating scan",
+        us_approach="transabdominal",
+        image_quality="optimal",
+        patient_id="MRN-12345",
+    )
+    r = client.post("/studies/s/reports", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["referring_physician"] == "Dr. Jane Smith"
+    assert body["lmp"] == "2025-11-01"
+    assert body["clinical_indication"] == "Routine 24-week dating scan"
+    assert body["us_approach"] == "transabdominal"
+    assert body["image_quality"] == "optimal"
+    assert body["patient_id"] == "MRN-12345"
 
 
 def test_create_report_requires_hc_or_finding(client, monkeypatch):

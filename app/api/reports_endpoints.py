@@ -25,14 +25,17 @@ Storage
 
 from __future__ import annotations
 
+import base64
 import os
 
+import cv2
+import numpy as np
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import Response
 
 from app.report import generate_cine_report, generate_static_report
 
-from . import findings_store, reports_db
+from . import findings_store, model_manager, reports_db, xai_endpoints
 from .schemas import (
     AuditEntryResponse,
     CreateReportRequest,
@@ -64,12 +67,13 @@ def _generate_narratives(
     hc_std_mm: float,
     elapsed_ms: float,
     api_key: str | None,
-) -> tuple[tuple[str, str, str | None], bool]:
-    """Generate the narrative paragraphs for a report.
+    report_mode: str = "template",
+) -> tuple[tuple[str, str, str | None, str | None], bool]:
+    """Generate narrative paragraphs.
 
-    Returns ((p1, p2, p3), used_llm). Falls back to rule-based paragraphs when
-    the API key is missing — used_llm is False in that case so the front end
-    can flag the report as a template-only output.
+    Returns ((p1, p2, p3, impression), used_llm).
+    LLM is used only when report_mode=='llm' AND api_key is present.
+    Falls back to rule-based paragraphs otherwise.
     """
     from app.report import (
         _llm_cine_narrative,
@@ -77,17 +81,19 @@ def _generate_narratives(
         _rule_cine_p1,
         _rule_cine_p2,
         _rule_compression_note,
+        _rule_impression,
         _rule_static_p1,
         _rule_static_p2,
     )
 
     model_name = _MODEL_VARIANT_TO_REPORT_NAME[model_variant]
     is_temporal = model_variant in _TEMPORAL_VARIANTS
+    use_llm = report_mode == "llm" and bool(api_key)
 
-    if api_key:
+    if use_llm:
         try:
             if is_temporal:
-                p1, p2, p3 = _llm_cine_narrative(
+                p1, p2, p3, impression = _llm_cine_narrative(
                     hc_mm,
                     ga_str,
                     ga_weeks,
@@ -100,7 +106,7 @@ def _generate_narratives(
                     api_key,
                 )
             else:
-                p1, p2, p3 = _llm_static_narrative(
+                p1, p2, p3, impression = _llm_static_narrative(
                     hc_mm,
                     ga_str,
                     ga_weeks,
@@ -110,7 +116,7 @@ def _generate_narratives(
                     elapsed_ms,
                     api_key,
                 )
-            return (p1, p2, p3), True
+            return (p1, p2, p3, impression), True
         except Exception:
             pass  # fall through to rule-based on any LLM failure
 
@@ -121,7 +127,50 @@ def _generate_narratives(
         p1 = _rule_static_p1(hc_mm, ga_str, ga_weeks, trimester)
         p2 = _rule_static_p2(True)
     p3 = _rule_compression_note(model_name, elapsed_ms)
-    return (p1, p2, p3), False
+    impression = _rule_impression(hc_mm, ga_str, ga_weeks, trimester)
+    return (p1, p2, p3, impression), False
+
+
+def _extract_images_from_store(
+    finding_id: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Pull original, overlay, and GradCAM images from the findings_store.
+
+    Returns (original_b64, overlay_b64, gradcam_b64). Any entry may be None
+    if the finding is no longer cached or the model is unloaded.
+    """
+    if not finding_id:
+        return None, None, None
+    rec = findings_store.get(finding_id)
+    if rec is None:
+        return None, None, None
+
+    # Overlay is pre-computed by /infer and stored in the findings dict
+    overlay_b64 = rec.findings.get("overlay_b64")
+
+    # Convert grayscale numpy array → PNG → base64
+    original_b64: str | None = None
+    try:
+        img = rec.img_gray
+        if img.dtype != np.uint8:
+            img = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+        _, buf = cv2.imencode(".png", img)
+        original_b64 = base64.b64encode(buf.tobytes()).decode()
+    except Exception:
+        pass
+
+    # Compute GradCAM using the loaded model
+    gradcam_b64: str | None = None
+    try:
+        model = model_manager.get_model(rec.model_variant)
+        if model is not None:
+            overlay_arr = xai_endpoints.compute_gradcam(model, rec.img_gray)
+            _, buf = cv2.imencode(".png", overlay_arr)
+            gradcam_b64 = base64.b64encode(buf.tobytes()).decode()
+    except Exception:
+        pass
+
+    return original_b64, overlay_b64, gradcam_b64
 
 
 def _render_pdf(report: reports_db.Report) -> bytes:
@@ -140,12 +189,13 @@ def _render_pdf(report: reports_db.Report) -> bytes:
         "confidence_label": report.confidence_label or "—",
         "elapsed_ms": report.elapsed_ms or 0.0,
         "mode": "cine_clip" if is_temporal else "phase0",
-        "gradcam_ok": True,
+        "gradcam_ok": bool(report.gradcam_image_b64),
     }
     narrative = (
         report.narrative_p1 or "",
         report.narrative_p2 or "",
         report.narrative_p3,
+        report.narrative_impression,
     )
     signed_meta = None
     if report.is_signed:
@@ -164,6 +214,7 @@ def _render_pdf(report: reports_db.Report) -> bytes:
         narrative=narrative,
         draft=not report.is_signed,
         signed_meta=signed_meta,
+        report=report,
     )
 
 
@@ -230,7 +281,7 @@ def create_report_endpoint(
         )
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
-    (p1, p2, p3), used_llm = _generate_narratives(
+    (p1, p2, p3, impression), used_llm = _generate_narratives(
         model_variant=body.model,
         hc_mm=fields["hc_mm"] or 0.0,
         ga_str=fields.get("ga_str") or "—",
@@ -240,7 +291,10 @@ def create_report_endpoint(
         hc_std_mm=fields.get("hc_std_mm") or 0.0,
         elapsed_ms=fields.get("elapsed_ms") or 0.0,
         api_key=api_key,
+        report_mode=body.report_mode,
     )
+
+    original_b64, overlay_b64, gradcam_b64 = _extract_images_from_store(body.finding_id)
 
     report = reports_db.create_report(
         study_id=study_id,
@@ -259,7 +313,22 @@ def create_report_endpoint(
         narrative_p1=p1,
         narrative_p2=p2,
         narrative_p3=p3,
+        narrative_impression=impression,
         used_llm=used_llm,
+        referring_physician=body.referring_physician,
+        patient_id=body.patient_id,
+        patient_dob=body.patient_dob,
+        lmp=body.lmp,
+        ordering_facility=body.ordering_facility,
+        sonographer_name=body.sonographer_name,
+        clinical_indication=body.clinical_indication,
+        us_approach=body.us_approach,
+        image_quality=body.image_quality,
+        pixel_spacing_dicom_derived=body.pixel_spacing_dicom_derived,
+        report_mode=body.report_mode,
+        original_image_b64=original_b64,
+        overlay_image_b64=overlay_b64,
+        gradcam_image_b64=gradcam_b64,
     )
     ip, ua = _request_meta(request)
     reports_db.add_audit(
@@ -268,7 +337,7 @@ def create_report_endpoint(
         actor=None,
         ip=ip,
         user_agent=ua,
-        details=f"model={body.model}; used_llm={used_llm}",
+        details=f"model={body.model}; mode={body.report_mode}; used_llm={used_llm}",
     )
     return ReportResponse(**report.to_dict())
 

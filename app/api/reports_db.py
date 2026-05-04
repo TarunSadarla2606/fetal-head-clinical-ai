@@ -32,29 +32,45 @@ DB_PATH = os.environ.get("REPORTS_DB_PATH", "reports.db")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reports (
-    id                TEXT PRIMARY KEY,
-    study_id          TEXT NOT NULL,
-    finding_id        TEXT,
-    patient_name      TEXT NOT NULL,
-    study_date        TEXT NOT NULL,
-    model             TEXT NOT NULL,
-    hc_mm             REAL,
-    ga_str            TEXT,
-    ga_weeks          REAL,
-    trimester         TEXT,
-    reliability       REAL,
-    confidence_label  TEXT,
-    pixel_spacing_mm  REAL,
-    elapsed_ms        REAL,
-    narrative_p1      TEXT,
-    narrative_p2      TEXT,
-    narrative_p3      TEXT,
-    used_llm          INTEGER NOT NULL DEFAULT 0,
-    is_signed         INTEGER NOT NULL DEFAULT 0,
-    signed_by         TEXT,
-    signed_at         TEXT,
-    signoff_note      TEXT,
-    created_at        TEXT NOT NULL
+    id                       TEXT PRIMARY KEY,
+    study_id                 TEXT NOT NULL,
+    finding_id               TEXT,
+    patient_name             TEXT NOT NULL,
+    study_date               TEXT NOT NULL,
+    model                    TEXT NOT NULL,
+    hc_mm                    REAL,
+    ga_str                   TEXT,
+    ga_weeks                 REAL,
+    trimester                TEXT,
+    reliability              REAL,
+    confidence_label         TEXT,
+    pixel_spacing_mm         REAL,
+    elapsed_ms               REAL,
+    narrative_p1             TEXT,
+    narrative_p2             TEXT,
+    narrative_p3             TEXT,
+    narrative_impression     TEXT,
+    used_llm                 INTEGER NOT NULL DEFAULT 0,
+    is_signed                INTEGER NOT NULL DEFAULT 0,
+    signed_by                TEXT,
+    signed_at                TEXT,
+    signoff_note             TEXT,
+    created_at               TEXT NOT NULL,
+    referring_physician      TEXT,
+    patient_id               TEXT,
+    patient_dob              TEXT,
+    lmp                      TEXT,
+    ordering_facility        TEXT,
+    sonographer_name         TEXT,
+    clinical_indication      TEXT,
+    us_approach              TEXT,
+    image_quality            TEXT,
+    pixel_spacing_dicom_derived INTEGER NOT NULL DEFAULT 0,
+    report_mode              TEXT NOT NULL DEFAULT 'template',
+    accession_number         TEXT,
+    original_image_b64       TEXT,
+    overlay_image_b64        TEXT,
+    gradcam_image_b64        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_reports_study   ON reports(study_id);
@@ -76,6 +92,26 @@ CREATE INDEX IF NOT EXISTS idx_audit_report ON audit_log(report_id);
 """
 
 
+_MIGRATION_COLUMNS = [
+    "narrative_impression     TEXT",
+    "referring_physician      TEXT",
+    "patient_id               TEXT",
+    "patient_dob              TEXT",
+    "lmp                      TEXT",
+    "ordering_facility        TEXT",
+    "sonographer_name         TEXT",
+    "clinical_indication      TEXT",
+    "us_approach              TEXT",
+    "image_quality            TEXT",
+    "pixel_spacing_dicom_derived INTEGER NOT NULL DEFAULT 0",
+    "report_mode              TEXT NOT NULL DEFAULT 'template'",
+    "accession_number         TEXT",
+    "original_image_b64       TEXT",
+    "overlay_image_b64        TEXT",
+    "gradcam_image_b64        TEXT",
+]
+
+
 @dataclass
 class Report:
     id: str
@@ -95,12 +131,28 @@ class Report:
     narrative_p1: str | None
     narrative_p2: str | None
     narrative_p3: str | None
+    narrative_impression: str | None
     used_llm: bool
     is_signed: bool
     signed_by: str | None
     signed_at: str | None
     signoff_note: str | None
     created_at: str
+    referring_physician: str | None = None
+    patient_id: str | None = None
+    patient_dob: str | None = None
+    lmp: str | None = None
+    ordering_facility: str | None = None
+    sonographer_name: str | None = None
+    clinical_indication: str | None = None
+    us_approach: str | None = None
+    image_quality: str | None = None
+    pixel_spacing_dicom_derived: bool = False
+    report_mode: str = "template"
+    accession_number: str | None = None
+    original_image_b64: str | None = None
+    overlay_image_b64: str | None = None
+    gradcam_image_b64: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -121,12 +173,28 @@ class Report:
             "narrative_p1": self.narrative_p1,
             "narrative_p2": self.narrative_p2,
             "narrative_p3": self.narrative_p3,
+            "narrative_impression": self.narrative_impression,
             "used_llm": self.used_llm,
             "is_signed": self.is_signed,
             "signed_by": self.signed_by,
             "signed_at": self.signed_at,
             "signoff_note": self.signoff_note,
             "created_at": self.created_at,
+            "referring_physician": self.referring_physician,
+            "patient_id": self.patient_id,
+            "patient_dob": self.patient_dob,
+            "lmp": self.lmp,
+            "ordering_facility": self.ordering_facility,
+            "sonographer_name": self.sonographer_name,
+            "clinical_indication": self.clinical_indication,
+            "us_approach": self.us_approach,
+            "image_quality": self.image_quality,
+            "pixel_spacing_dicom_derived": self.pixel_spacing_dicom_derived,
+            "report_mode": self.report_mode,
+            "accession_number": self.accession_number,
+            "original_image_b64": self.original_image_b64,
+            "overlay_image_b64": self.overlay_image_b64,
+            "gradcam_image_b64": self.gradcam_image_b64,
         }
 
 
@@ -170,11 +238,25 @@ def _conn(db_path: str | None = None):
 def init_db(db_path: str | None = None) -> None:
     with _conn(db_path) as c:
         c.executescript(_SCHEMA)
+        # Idempotent migration: add any columns that didn't exist in older DBs.
+        for col_def in _MIGRATION_COLUMNS:
+            try:
+                c.execute(f"ALTER TABLE reports ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 def _now() -> str:
     # ISO 8601 with milliseconds in UTC
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _row_get(row: sqlite3.Row, key: str, default=None):
+    """Safe column access — returns default for columns not yet migrated."""
+    try:
+        return row[key]
+    except IndexError:
+        return default
 
 
 def _row_to_report(row: sqlite3.Row) -> Report:
@@ -196,12 +278,28 @@ def _row_to_report(row: sqlite3.Row) -> Report:
         narrative_p1=row["narrative_p1"],
         narrative_p2=row["narrative_p2"],
         narrative_p3=row["narrative_p3"],
+        narrative_impression=_row_get(row, "narrative_impression"),
         used_llm=bool(row["used_llm"]),
         is_signed=bool(row["is_signed"]),
         signed_by=row["signed_by"],
         signed_at=row["signed_at"],
         signoff_note=row["signoff_note"],
         created_at=row["created_at"],
+        referring_physician=_row_get(row, "referring_physician"),
+        patient_id=_row_get(row, "patient_id"),
+        patient_dob=_row_get(row, "patient_dob"),
+        lmp=_row_get(row, "lmp"),
+        ordering_facility=_row_get(row, "ordering_facility"),
+        sonographer_name=_row_get(row, "sonographer_name"),
+        clinical_indication=_row_get(row, "clinical_indication"),
+        us_approach=_row_get(row, "us_approach"),
+        image_quality=_row_get(row, "image_quality"),
+        pixel_spacing_dicom_derived=bool(_row_get(row, "pixel_spacing_dicom_derived", 0)),
+        report_mode=_row_get(row, "report_mode", "template") or "template",
+        accession_number=_row_get(row, "accession_number"),
+        original_image_b64=_row_get(row, "original_image_b64"),
+        overlay_image_b64=_row_get(row, "overlay_image_b64"),
+        gradcam_image_b64=_row_get(row, "gradcam_image_b64"),
     )
 
 
@@ -216,6 +314,13 @@ def _row_to_audit(row: sqlite3.Row) -> AuditEntry:
         details=row["details"],
         timestamp=row["timestamp"],
     )
+
+
+def _make_accession(created: str) -> str:
+    """Generate FHC-YYYYMMDD-HHMMSS accession number from ISO timestamp."""
+    digits = created.replace("-", "").replace("T", "-").replace(":", "").replace("Z", "")
+    # digits = "YYYYMMDD-HHMMSS"
+    return f"FHC-{digits[:8]}-{digits[9:15]}"
 
 
 def create_report(
@@ -236,11 +341,27 @@ def create_report(
     narrative_p1: str | None,
     narrative_p2: str | None,
     narrative_p3: str | None,
+    narrative_impression: str | None,
     used_llm: bool,
+    referring_physician: str | None = None,
+    patient_id: str | None = None,
+    patient_dob: str | None = None,
+    lmp: str | None = None,
+    ordering_facility: str | None = None,
+    sonographer_name: str | None = None,
+    clinical_indication: str | None = None,
+    us_approach: str | None = None,
+    image_quality: str | None = None,
+    pixel_spacing_dicom_derived: bool = False,
+    report_mode: str = "template",
+    original_image_b64: str | None = None,
+    overlay_image_b64: str | None = None,
+    gradcam_image_b64: str | None = None,
     db_path: str | None = None,
 ) -> Report:
     rid = f"rep_{uuid.uuid4().hex[:16]}"
     created = _now()
+    accession = _make_accession(created)
     with _conn(db_path) as c:
         c.execute(
             """
@@ -248,9 +369,17 @@ def create_report(
                 id, study_id, finding_id, patient_name, study_date, model,
                 hc_mm, ga_str, ga_weeks, trimester, reliability,
                 confidence_label, pixel_spacing_mm, elapsed_ms,
-                narrative_p1, narrative_p2, narrative_p3, used_llm,
-                is_signed, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                narrative_p1, narrative_p2, narrative_p3, narrative_impression,
+                used_llm, is_signed, created_at,
+                referring_physician, patient_id, patient_dob, lmp,
+                ordering_facility, sonographer_name, clinical_indication,
+                us_approach, image_quality,
+                pixel_spacing_dicom_derived, report_mode, accession_number,
+                original_image_b64, overlay_image_b64, gradcam_image_b64
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 rid,
@@ -270,8 +399,24 @@ def create_report(
                 narrative_p1,
                 narrative_p2,
                 narrative_p3,
+                narrative_impression,
                 int(used_llm),
                 created,
+                referring_physician,
+                patient_id,
+                patient_dob,
+                lmp,
+                ordering_facility,
+                sonographer_name,
+                clinical_indication,
+                us_approach,
+                image_quality,
+                int(pixel_spacing_dicom_derived),
+                report_mode,
+                accession,
+                original_image_b64,
+                overlay_image_b64,
+                gradcam_image_b64,
             ),
         )
     return get_report(rid, db_path=db_path)  # type: ignore[return-value]
