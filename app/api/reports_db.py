@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS reports (
     accession_number         TEXT,
     original_image_b64       TEXT,
     overlay_image_b64        TEXT,
-    gradcam_image_b64        TEXT
+    gradcam_image_b64        TEXT,
+    fetal_presentation       TEXT,
+    bpd_mm                   REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_reports_study   ON reports(study_id);
@@ -109,6 +111,8 @@ _MIGRATION_COLUMNS = [
     "original_image_b64       TEXT",
     "overlay_image_b64        TEXT",
     "gradcam_image_b64        TEXT",
+    "fetal_presentation       TEXT",
+    "bpd_mm                   REAL",
 ]
 
 
@@ -153,6 +157,8 @@ class Report:
     original_image_b64: str | None = None
     overlay_image_b64: str | None = None
     gradcam_image_b64: str | None = None
+    fetal_presentation: str | None = None
+    bpd_mm: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -195,6 +201,8 @@ class Report:
             "original_image_b64": self.original_image_b64,
             "overlay_image_b64": self.overlay_image_b64,
             "gradcam_image_b64": self.gradcam_image_b64,
+            "fetal_presentation": self.fetal_presentation,
+            "bpd_mm": self.bpd_mm,
         }
 
 
@@ -300,6 +308,8 @@ def _row_to_report(row: sqlite3.Row) -> Report:
         original_image_b64=_row_get(row, "original_image_b64"),
         overlay_image_b64=_row_get(row, "overlay_image_b64"),
         gradcam_image_b64=_row_get(row, "gradcam_image_b64"),
+        fetal_presentation=_row_get(row, "fetal_presentation"),
+        bpd_mm=_row_get(row, "bpd_mm"),
     )
 
 
@@ -357,6 +367,8 @@ def create_report(
     original_image_b64: str | None = None,
     overlay_image_b64: str | None = None,
     gradcam_image_b64: str | None = None,
+    fetal_presentation: str | None = None,
+    bpd_mm: float | None = None,
     db_path: str | None = None,
 ) -> Report:
     rid = f"rep_{uuid.uuid4().hex[:16]}"
@@ -375,10 +387,11 @@ def create_report(
                 ordering_facility, sonographer_name, clinical_indication,
                 us_approach, image_quality,
                 pixel_spacing_dicom_derived, report_mode, accession_number,
-                original_image_b64, overlay_image_b64, gradcam_image_b64
+                original_image_b64, overlay_image_b64, gradcam_image_b64,
+                fetal_presentation, bpd_mm
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -417,6 +430,8 @@ def create_report(
                 original_image_b64,
                 overlay_image_b64,
                 gradcam_image_b64,
+                fetal_presentation,
+                bpd_mm,
             ),
         )
     return get_report(rid, db_path=db_path)  # type: ignore[return-value]

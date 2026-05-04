@@ -163,6 +163,17 @@ def test_create_report_clinical_fields_persisted(client, monkeypatch):
     assert body["patient_id"] == "MRN-12345"
 
 
+def test_create_report_bpd_and_presentation_round_trip(client, monkeypatch):
+    """v3.1: bpd_mm and fetal_presentation must survive the round-trip."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    payload = _payload(bpd_mm=58.4, fetal_presentation="cephalic")
+    r = client.post("/studies/s/reports", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["bpd_mm"] == 58.4
+    assert body["fetal_presentation"] == "cephalic"
+
+
 def test_create_report_requires_hc_or_finding(client, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     payload = _payload()

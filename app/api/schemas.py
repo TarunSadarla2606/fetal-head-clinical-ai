@@ -92,6 +92,10 @@ class CreateReportRequest(BaseModel):
     image_quality: Literal["optimal", "suboptimal", "limited"] | None = None
     pixel_spacing_dicom_derived: bool = False
     report_mode: Literal["template", "llm"] = "template"
+    fetal_presentation: Literal["cephalic", "breech", "transverse", "not_assessed"] | None = (
+        "not_assessed"
+    )
+    bpd_mm: float | None = None  # optional secondary biometric parameter
 
 
 class SignReportRequest(BaseModel):
@@ -140,6 +144,8 @@ class ReportResponse(BaseModel):
     original_image_b64: str | None = None
     overlay_image_b64: str | None = None
     gradcam_image_b64: str | None = None
+    fetal_presentation: str | None = None
+    bpd_mm: float | None = None
 
 
 class AuditEntryResponse(BaseModel):

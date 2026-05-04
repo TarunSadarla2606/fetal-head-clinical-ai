@@ -329,6 +329,8 @@ def create_report_endpoint(
         original_image_b64=original_b64,
         overlay_image_b64=overlay_b64,
         gradcam_image_b64=gradcam_b64,
+        fetal_presentation=body.fetal_presentation,
+        bpd_mm=body.bpd_mm,
     )
     ip, ua = _request_meta(request)
     reports_db.add_audit(

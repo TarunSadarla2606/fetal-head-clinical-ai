@@ -1,5 +1,5 @@
 """
-report.py — Fetal Head Circumference Clinical AI
+report.py — Fetal Head Circumference Clinical AI v3.1
 ACR/AIUM/ESR-compliant PDF report generation.
 
 Public functions:
@@ -8,21 +8,14 @@ Public functions:
   generate_comparison_report() — All four models head-to-head (Tab 3)
   generate_pdf_report()        — Backwards-compatible router
 
-Report structure (11 sections):
-  1  Header — accession, datetime, status badges, AI-assisted watermark line
-  2  Patient & Exam Information — two-column demographics table
-  3  Clinical Indication
-  4  Technical Parameters — pixel spacing with DICOM/estimated flag
-  5  Biometric Findings — HC, GA, LMP discordance
-  6  Images — 3-panel: original / segmentation overlay / GradCAM
-  7  Clinical Interpretation — template or AI-authored (clearly labelled)
-  8  AI System Performance — compact validation table
-  9  Impression — bordered box, plain language for referring physician
-  10 Sign-off block
-  11 Regulatory footer
+Page layout (v3.1):
+  Page 1  Header + Patient/Exam + Indication + Technical + Biometric Findings
+  Page 2  Images + Impression + Clinical Interpretation
+  Page 3  AI System Validation Summary + Sign-off + Regulatory Notice
+  Page 4  Appendix A — model engineering details (only when compressed model used)
 
-Two modes are supported and visually distinct:
-  template — rule-based paragraphs, blue accent, "AUTOMATED TEMPLATE REPORT"
+Two narrative modes:
+  template — rule-based paragraphs, grey accent, "AUTOMATED TEMPLATE REPORT"
   llm      — Claude Haiku narrative, teal accent, "AI-AUTHORED CLINICAL NARRATIVE"
 """
 
@@ -38,7 +31,6 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
     Image,
-    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -48,18 +40,24 @@ from reportlab.platypus import (
 )
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
-_TEAL = colors.HexColor("#2D7D9A")  # clinical teal — accent bar, LLM mode
-_NAVY = colors.HexColor("#1e3a5f")  # navy — headings, labels
-_GREY = colors.HexColor("#4b5563")  # grey — template mode accent
-_AMBER = colors.HexColor("#b45309")  # amber — warnings, estimated pixel spacing
-_RED = colors.HexColor("#991b1b")  # red — OOD flag
-_PRUNED = colors.HexColor("#065f46")  # green — sign-off, compression note
+_TEAL = colors.HexColor("#2D7D9A")
+_NAVY = colors.HexColor("#1e3a5f")
+_GREY = colors.HexColor("#4b5563")
+_AMBER = colors.HexColor("#b45309")
+_AMBER_BG = colors.HexColor("#FFF3CD")
+_AMBER_BORDER = colors.HexColor("#FFC107")
+_RED = colors.HexColor("#991b1b")
+_PRUNED = colors.HexColor("#065f46")
 _LIGHT_BG = colors.HexColor("#f0f4f8")
-_IMPRESSION_BG = colors.HexColor("#f0f9ff")  # light blue — impression box
+_ROW_ALT = colors.HexColor("#F9F9F9")
+_IMPRESSION_BG = colors.HexColor("#F0F7FA")
 _BORDER = colors.HexColor("#cccccc")
-_TEAL_BORDER = colors.HexColor("#2D7D9A")
+_HEADER_RULE = colors.HexColor("#CCCCCC")
 _PAGE_W = A4[0]
 _CONTENT_W = _PAGE_W - 40 * mm  # 20 mm margins each side
+
+# Status text fragments — use ⚠ (U+26A0), never ■ (causes glyph fallback issues)
+_WARN = "⚠"
 
 
 # ── Model metadata ─────────────────────────────────────────────────────────────
@@ -120,6 +118,14 @@ def _meta(model_name: str) -> dict:
     return _MODEL_META.get(model_name, _FALLBACK_META)
 
 
+_PRESENTATION_LABELS = {
+    "cephalic": "Cephalic",
+    "breech": "Breech",
+    "transverse": "Transverse",
+    "not_assessed": "Not assessed",
+}
+
+
 # ── Styles ─────────────────────────────────────────────────────────────────────
 
 
@@ -153,10 +159,10 @@ def _styles(llm: bool = False):
         sec=ParagraphStyle(
             "se",
             parent=s["Heading2"],
-            fontSize=9.5,
+            fontSize=11,
             spaceBefore=8,
-            spaceAfter=3,
-            textColor=_NAVY,
+            spaceAfter=2,
+            textColor=_TEAL,
             fontName="Helvetica-Bold",
         ),
         body=ParagraphStyle(
@@ -173,6 +179,7 @@ def _styles(llm: bool = False):
             spaceAfter=4,
             leading=13.5,
             textColor=_GREY,
+            fontName="Helvetica-Oblique",
         ),
         warn=ParagraphStyle(
             "wa",
@@ -180,6 +187,14 @@ def _styles(llm: bool = False):
             fontSize=8,
             leading=11,
             textColor=_AMBER,
+        ),
+        warn_bold=ParagraphStyle(
+            "wab",
+            parent=s["Normal"],
+            fontSize=10,
+            leading=13,
+            textColor=_AMBER,
+            fontName="Helvetica-Bold",
         ),
         label=ParagraphStyle(
             "la",
@@ -200,9 +215,24 @@ def _styles(llm: bool = False):
         impression=ParagraphStyle(
             "im",
             parent=s["Normal"],
-            fontSize=9.5,
+            fontSize=10,
             leading=14,
             textColor=_NAVY,
+        ),
+        not_provided=ParagraphStyle(
+            "np",
+            parent=s["Normal"],
+            fontSize=8,
+            textColor=_GREY,
+            fontName="Helvetica-Oblique",
+        ),
+        signoff_note=ParagraphStyle(
+            "son",
+            parent=s["Normal"],
+            fontSize=9,
+            leading=12,
+            textColor=_NAVY,
+            fontName="Helvetica-Oblique",
         ),
         footer=ParagraphStyle(
             "fo",
@@ -210,6 +240,14 @@ def _styles(llm: bool = False):
             fontSize=7,
             leading=10,
             textColor=_GREY,
+        ),
+        footnote=ParagraphStyle(
+            "fn",
+            parent=s["Normal"],
+            fontSize=7.5,
+            leading=10,
+            textColor=_GREY,
+            fontName="Helvetica-Oblique",
         ),
         img_cap=ParagraphStyle(
             "ic",
@@ -223,6 +261,8 @@ def _styles(llm: bool = False):
 
 
 def _tbl_style(header_color=None):
+    """Standard data table style: navy/teal header, alternating row shading,
+    light grey grid, 8pt content."""
     hc = header_color or _NAVY
     return TableStyle(
         [
@@ -230,7 +270,7 @@ def _tbl_style(header_color=None):
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_LIGHT_BG, colors.white]),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_ROW_ALT, colors.white]),
             ("GRID", (0, 0), (-1, -1), 0.3, _BORDER),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -259,6 +299,8 @@ def _draw_draft_watermark(canvas, doc):
 
 def _strip_markdown(text: str) -> str:
     """Remove markdown headers, bold, italic, bullets from LLM output."""
+    if not text:
+        return ""
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"\*(.+?)\*", r"\1", text)
@@ -301,15 +343,54 @@ def _ga_discordance_days(lmp: str, ga_weeks: float) -> Optional[int]:
         return None
 
 
+def _lmp_ga_days(lmp: str) -> Optional[int]:
+    try:
+        lmp_dt = datetime.strptime(lmp, "%Y-%m-%d")
+        return (datetime.utcnow() - lmp_dt).days
+    except Exception:
+        return None
+
+
+def _format_weeks_days(days: Optional[int]) -> str:
+    """Format day count as 'Xw Yd'. Returns '—' for None."""
+    if days is None:
+        return "—"
+    weeks = days // 7
+    rem = days % 7
+    return f"{weeks}w {rem}d"
+
+
+def _bpd_to_ga_weeks(bpd_mm: float) -> Optional[float]:
+    """Hadlock 1984 BPD-only nomogram (BPD in cm).
+
+    GA(weeks) = 9.54 + 1.482·BPD + 0.1676·BPD²
+
+    Reasonable estimate over 14–34 weeks. Outside that range, the polynomial
+    diverges — return None so the report shows '—' rather than a misleading value.
+    """
+    if not bpd_mm or bpd_mm <= 0:
+        return None
+    bpd_cm = bpd_mm / 10.0
+    ga = 9.54 + 1.482 * bpd_cm + 0.1676 * bpd_cm * bpd_cm
+    if ga < 12 or ga > 42:
+        return None
+    return ga
+
+
+def _ga_str_from_weeks(ga_weeks: float) -> str:
+    """Convert GA in weeks to 'Xw Yd' display string."""
+    total_days = round(ga_weeks * 7)
+    return f"{total_days // 7}w {total_days % 7}d"
+
+
 def _b64_to_image_flowable(b64_str: str, max_width: float, max_height: float) -> Optional[Image]:
-    """Decode base64 PNG/JPG string → reportlab Image flowable, respecting max dimensions."""
+    """Decode base64 PNG/JPG string → reportlab Image flowable, fit to box."""
     try:
         import base64
 
         data = base64.b64decode(b64_str)
         buf = io.BytesIO(data)
         img = Image(buf)
-        # Scale to fit within max_width × max_height preserving aspect ratio
         w, h = img.imageWidth, img.imageHeight
         if w > 0 and h > 0:
             scale = min(max_width / w, max_height / h)
@@ -320,15 +401,37 @@ def _b64_to_image_flowable(b64_str: str, max_width: float, max_height: float) ->
         return None
 
 
+def _field_value(st, value: Optional[str]) -> Paragraph:
+    """Render a field value: bold black if present, italic grey 'Not provided' if blank."""
+    if value is None or str(value).strip() == "" or value == "—":
+        return Paragraph("Not provided", st["not_provided"])
+    return Paragraph(str(value), st["body"])
+
+
+# ── Section header rule (under each section title) ─────────────────────────────
+
+
+def _section_rule(story):
+    story.append(HRFlowable(width="100%", thickness=0.5, color=_HEADER_RULE, spaceAfter=3))
+
+
 # ── Section 1 — Report Header ──────────────────────────────────────────────────
 
 
-def _section_header(story, st, model_name, llm, elapsed_ms, accession, report_mode, ood_flag=False):
+def _section_header(
+    story,
+    st,
+    model_name,
+    llm,
+    elapsed_ms,
+    accession,
+    report_mode,
+    ood_flag=False,
+    hc_only=False,
+):
     acc = _TEAL if llm else _GREY
     mode_label = "AI-AUTHORED CLINICAL NARRATIVE" if llm else "AUTOMATED TEMPLATE REPORT"
-    m = _meta(model_name)
 
-    # Accent bar — teal rectangle drawn as a coloured table row
     header_data = [
         [
             Paragraph("Fetal Biometry — AI-Assisted Measurement Report", st["title"]),
@@ -354,64 +457,63 @@ def _section_header(story, st, model_name, llm, elapsed_ms, accession, report_mo
         )
     )
     story.append(header_tbl)
-    story.append(Spacer(1, 2 * mm))
+    # 4pt teal rule directly under title (clinical AI report convention)
+    story.append(HRFlowable(width="100%", thickness=4, color=_TEAL, spaceAfter=4))
 
-    # Badge row
-    badges = [f'<font color="{acc.hexval()}">[{mode_label}]</font>']
-    if m["pruned"]:
-        badges.append(
-            f'<font color="{_PRUNED.hexval()}">[COMPRESSED MODEL — {m["compression"]}]</font>'
-        )
-    badges.append(
-        f'<font color="{_NAVY.hexval()}">[AI-Assisted — Requires Clinical Verification]</font>'
-    )
+    # Badge row — clinical-only labels. Model engineering details belong in Appendix A.
+    badges = [
+        f'<font color="{acc.hexval()}">[{mode_label}]</font>',
+        f'<font color="{_NAVY.hexval()}">[AI-Assisted — Requires Clinical Verification]</font>',
+    ]
+    if hc_only:
+        badges.append(f'<font color="{_AMBER.hexval()}">[SINGLE PARAMETER — HC ONLY]</font>')
     if ood_flag:
-        badges.append(f'<font color="{_RED.hexval()}">[⚠ OUT-OF-DISTRIBUTION ALERT]</font>')
+        badges.append(f'<font color="{_RED.hexval()}">[{_WARN} OUT-OF-DISTRIBUTION ALERT]</font>')
     story.append(Paragraph("  ·  ".join(badges), st["badge"]))
-    story.append(
-        Paragraph(
-            f"Model: {m['short']}" + (f"  |  Inference: {elapsed_ms:.0f} ms" if elapsed_ms else ""),
-            st["footer"],
-        )
-    )
-    story.append(HRFlowable(width="100%", thickness=1.2, color=acc, spaceAfter=4))
 
 
 # ── Section 2 — Patient & Exam Information ─────────────────────────────────────
 
 
 def _section_patient_exam(story, st, report):
-    story.append(Paragraph("Patient & Exam Information", st["sec"]))
-
-    def _val(v):
-        return v or "—"
+    story.append(Paragraph("Patient &amp; Exam Information", st["sec"]))
+    _section_rule(story)
 
     edd = _calculate_edd(report.lmp) if report.lmp else None
-    lmp_row = f"{_val(report.lmp)}"
-    edd_row = edd or ("Calculated from LMP" if report.lmp else "—")
+    edd_row = edd or ("Calculated from LMP" if report.lmp else None)
 
     left = [
-        ["Patient Name", _val(report.patient_name)],
-        ["Patient ID / MRN", _val(report.patient_id)],
-        ["Date of Birth", _val(report.patient_dob)],
-        ["LMP (Last Menstrual Period)", lmp_row],
-        ["EDD (Expected Delivery Date)", edd_row],
+        ("Patient Name", report.patient_name),
+        ("Patient ID / MRN", report.patient_id),
+        ("Date of Birth", report.patient_dob),
+        ("LMP (Last Menstrual Period)", report.lmp),
+        ("EDD (Expected Delivery Date)", edd_row),
     ]
     right = [
-        ["Referring Physician", _val(report.referring_physician)],
-        ["Ordering Facility", _val(report.ordering_facility)],
-        ["Sonographer", _val(report.sonographer_name)],
-        ["Exam Date", _val(report.study_date)],
-        ["Exam Type", _ga_exam_type(report.ga_weeks)],
+        ("Referring Physician", report.referring_physician),
+        ("Ordering Facility", report.ordering_facility),
+        ("Sonographer", report.sonographer_name),
+        ("Exam Date", report.study_date),
+        ("Exam Type", _ga_exam_type(report.ga_weeks)),
     ]
 
-    # Build as a single wide table with 4 columns: label | value | label | value
-    combined = []
-    for l_row, r_row in zip(left, right):
-        combined.append([l_row[0], l_row[1], r_row[0], r_row[1]])
+    rows = []
+    for (l_label, l_val), (r_label, r_val) in zip(left, right):
+        rows.append(
+            [
+                l_label,
+                _field_value(st, l_val),
+                r_label,
+                _field_value(st, r_val),
+            ]
+        )
 
-    col_w = [38 * mm, 52 * mm, 38 * mm, 42 * mm]
-    t = Table(combined, colWidths=col_w)
+    # 35% / 65% per side; total 4 cols at (label/value/label/value)
+    inner_label = 0.35 * (_CONTENT_W / 2)
+    inner_value = 0.65 * (_CONTENT_W / 2)
+    col_w = [inner_label, inner_value, inner_label, inner_value]
+
+    t = Table(rows, colWidths=col_w)
     t.setStyle(
         TableStyle(
             [
@@ -422,6 +524,8 @@ def _section_patient_exam(story, st, report):
                 ("TEXTCOLOR", (2, 0), (2, -1), _NAVY),
                 ("BACKGROUND", (0, 0), (0, -1), _LIGHT_BG),
                 ("BACKGROUND", (2, 0), (2, -1), _LIGHT_BG),
+                ("ROWBACKGROUNDS", (1, 0), (1, -1), [colors.white, _ROW_ALT]),
+                ("ROWBACKGROUNDS", (3, 0), (3, -1), [colors.white, _ROW_ALT]),
                 ("GRID", (0, 0), (-1, -1), 0.3, _BORDER),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -436,8 +540,8 @@ def _section_patient_exam(story, st, report):
 
 
 def _ga_exam_type(ga_weeks) -> str:
-    if ga_weeks is None:
-        return "—"
+    if ga_weeks is None or ga_weeks == 0:
+        return None  # rendered as 'Not provided' by _field_value
     if ga_weeks < 14:
         return "First trimester"
     elif ga_weeks < 28:
@@ -451,14 +555,15 @@ def _ga_exam_type(ga_weeks) -> str:
 
 def _section_clinical_indication(story, st, report):
     story.append(Paragraph("Clinical Indication", st["sec"]))
+    _section_rule(story)
     indication = report.clinical_indication if report.clinical_indication else None
     if indication:
         story.append(Paragraph(indication, st["body"]))
     else:
         story.append(
             Paragraph(
-                "⚠ Clinical indication not provided. Completing this field is recommended "
-                "for ACR/AIUM-compliant sonography documentation.",
+                f"{_WARN} Clinical indication not provided. Completing this field is "
+                "recommended for ACR/AIUM-compliant sonography documentation.",
                 st["warn"],
             )
         )
@@ -470,13 +575,19 @@ def _section_clinical_indication(story, st, report):
 
 def _section_technical_params(story, st, report):
     story.append(Paragraph("Technical Parameters", st["sec"]))
+    _section_rule(story)
 
     ps_mm = report.pixel_spacing_mm or 0.070
     dicom_flag = getattr(report, "pixel_spacing_dicom_derived", False)
-    ps_source = "DICOM-derived ✓" if dicom_flag else "Estimated ⚠ — verify before clinical use"
+    ps_source = (
+        "DICOM-derived ✓" if dicom_flag else f"{_WARN} Estimated — verify before clinical use"
+    )
 
     us_approach = (report.us_approach or "transabdominal").capitalize()
     image_quality = (report.image_quality or "not recorded").capitalize()
+
+    presentation_key = getattr(report, "fetal_presentation", None) or "not_assessed"
+    presentation_label = _PRESENTATION_LABELS.get(presentation_key, "Not assessed")
 
     rows = [
         ["Parameter", "Value", "Notes"],
@@ -484,75 +595,168 @@ def _section_technical_params(story, st, report):
         ["Scanning plane", "Suboccipitobregmatic", "Standard fetal head biometry plane"],
         ["Pixel spacing", f"{ps_mm:.4f} mm/pixel", ps_source],
         ["Image quality", image_quality, "Sonographer assessment"],
+        ["Fetal lie / presentation", presentation_label, "AIUM/ISUOG standard component"],
         ["Measurement standard", "ISUOG Practice Guidelines 2010", "HC measurement methodology"],
     ]
-    t = Table(rows, colWidths=[55 * mm, 55 * mm, 60 * mm])
+    # 30 / 20 / 50 column ratios
+    col_w = [_CONTENT_W * 0.30, _CONTENT_W * 0.20, _CONTENT_W * 0.50]
+    t = Table(rows, colWidths=col_w)
     ts = _tbl_style()
     if not dicom_flag:
-        # Highlight pixel spacing row in amber
-        ts.add("TEXTCOLOR", (0, 2), (-1, 2), _AMBER)
-        ts.add("FONTNAME", (0, 2), (0, 2), "Helvetica-Bold")
+        ts.add("TEXTCOLOR", (0, 3), (-1, 3), _AMBER)
+        ts.add("FONTNAME", (0, 3), (0, 3), "Helvetica-Bold")
     t.setStyle(ts)
     story.append(t)
-
-    if not dicom_flag:
-        story.append(
-            Paragraph(
-                "⚠ Pixel spacing was not auto-detected from DICOM metadata. "
-                "The value shown is user-supplied or a system default. "
-                "Incorrect pixel spacing will produce a wrong HC measurement — "
-                "verify against your ultrasound system's calibration data.",
-                st["warn"],
-            )
-        )
     story.append(Spacer(1, 3 * mm))
 
 
 # ── Section 5 — Biometric Findings ────────────────────────────────────────────
 
 
-def _section_biometric_findings(story, st, report, lmp=None):
+def _confidence_label_effective(report, base_label: Optional[str]) -> str:
+    """Downgrade HIGH CONFIDENCE → MODERATE when pixel spacing is unverified.
+
+    HIGH CONFIDENCE requires both adequate segmentation coverage AND
+    DICOM-verified pixel spacing. If pixel spacing was user-supplied or
+    defaulted, cap the confidence rating regardless of segmentation quality.
+    """
+    base = base_label or "—"
+    dicom_flag = bool(getattr(report, "pixel_spacing_dicom_derived", False))
+    if not dicom_flag and "HIGH" in base.upper():
+        return "MODERATE — pixel spacing unverified"
+    return base
+
+
+def _section_biometric_findings(story, st, report):
     story.append(Paragraph("Biometric Findings", st["sec"]))
+    _section_rule(story)
+
+    dicom_flag = bool(getattr(report, "pixel_spacing_dicom_derived", False))
+    ps_mm = report.pixel_spacing_mm or 0.070
+
+    # Pixel-spacing warning banner — surface this prominently rather than
+    # burying it in a table footnote.
+    if not dicom_flag:
+        warn_data = [
+            [
+                Paragraph(
+                    f"<b>{_WARN} WARNING:</b> Pixel spacing ({ps_mm:.4f} mm/pixel) is "
+                    "estimated, not DICOM-verified. HC measurement may be inaccurate. "
+                    "Verify pixel spacing before clinical use.",
+                    st["warn_bold"],
+                )
+            ]
+        ]
+        warn_tbl = Table(warn_data, colWidths=[_CONTENT_W])
+        warn_tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), _AMBER_BG),
+                    ("BOX", (0, 0), (-1, -1), 1, _AMBER_BORDER),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        story.append(warn_tbl)
+        story.append(Spacer(1, 3 * mm))
 
     hc = report.hc_mm
     ga_str = report.ga_str or "—"
     ga_weeks = report.ga_weeks or 0.0
     trim = report.trimester or "—"
-    conf = report.confidence_label or "—"
+    conf = _confidence_label_effective(report, report.confidence_label)
     ci_str = _ga_ci_string(ga_weeks) if ga_weeks else "—"
 
-    ood_flag = False  # populated from result dict when called from generate_*_report
+    bpd_mm = getattr(report, "bpd_mm", None)
+    bpd_ga_weeks = _bpd_to_ga_weeks(bpd_mm) if bpd_mm else None
+    bpd_ga_str = _ga_str_from_weeks(bpd_ga_weeks) if bpd_ga_weeks else None
 
     rows = [
         ["Parameter", "AI Measurement", "Reference / Notes"],
         ["Head Circumference (HC)", f"{hc:.1f} mm" if hc else "—", "Calvarium perimeter"],
-        ["Estimated Gestational Age", ga_str, f"Hadlock 1984 nomogram  {ci_str}"],
+        [
+            "Estimated Gestational Age (HC)",
+            ga_str,
+            f"Hadlock 1984 nomogram  {ci_str}",
+        ],
         ["Trimester", trim, "Derived from estimated GA"],
-        ["Measurement Confidence", conf, "Based on segmentation coverage"],
+        ["Measurement Confidence", conf, "Coverage + pixel-spacing verification"],
     ]
-    t = Table(rows, colWidths=[58 * mm, 42 * mm, 70 * mm])
-    t.setStyle(_tbl_style())
+    # BPD row — optional; greyed out if not entered
+    if bpd_mm:
+        rows.insert(
+            2,
+            [
+                "Biparietal Diameter (BPD)",
+                f"{bpd_mm:.1f} mm",
+                f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range",
+            ],
+        )
+    else:
+        rows.insert(
+            2,
+            ["BPD", "Not measured", "Single-parameter study (HC only)"],
+        )
+
+    # 40 / 30 / 30 column ratios
+    col_w = [_CONTENT_W * 0.40, _CONTENT_W * 0.30, _CONTENT_W * 0.30]
+    t = Table(rows, colWidths=col_w)
+    ts = _tbl_style()
+    if not bpd_mm:
+        # grey the BPD row to signal intentional omission
+        ts.add("TEXTCOLOR", (0, 2), (-1, 2), _GREY)
+        ts.add("FONTNAME", (1, 2), (1, 2), "Helvetica-Oblique")
+    t.setStyle(ts)
     story.append(t)
 
-    # LMP cross-check
-    lmp_val = getattr(report, "lmp", None) or lmp
+    # LMP cross-check / GA discordance
+    lmp_val = getattr(report, "lmp", None)
     if lmp_val and ga_weeks:
         edd = _calculate_edd(lmp_val)
-        disc = _ga_discordance_days(lmp_val, ga_weeks)
-        disc_flag = disc is not None and disc > 14
-        disc_str = f"{disc} days" if disc is not None else "—"
-        disc_note = " ⚠ DISCORDANT (>14 days — clinical review recommended)" if disc_flag else ""
+        lmp_days = _lmp_ga_days(lmp_val)
+        disc_days = _ga_discordance_days(lmp_val, ga_weeks)
+        disc_flag = disc_days is not None and disc_days > 14
+
+        lmp_ga_str = _format_weeks_days(lmp_days)
+        hc_ga_display = _format_weeks_days(round(ga_weeks * 7)) if ga_weeks else "—"
+        disc_str = _format_weeks_days(disc_days) if disc_days is not None else "—"
+
+        if disc_flag:
+            disc_value = f"{disc_str} {_WARN} (>2 weeks — clinical review recommended)"
+        else:
+            disc_value = disc_str
+
+        side_by_side = f"LMP GA: {lmp_ga_str}  |  HC GA: {hc_ga_display}  |  EDD: {edd or '—'}"
 
         lmp_rows = [
-            ["GA Source", "Value", "Notes"],
-            ["GA from HC (Hadlock 1984)", ga_str, "This measurement"],
-            ["LMP-derived GA", "Calculated from LMP entry", f"LMP: {lmp_val}  EDD: {edd or '—'}"],
-            ["Discordance (|LMP GA − HC GA|)", disc_str, disc_note],
+            ["GA Comparison", "Value", "Notes"],
+            ["GA from HC (Hadlock 1984)", hc_ga_display, "This measurement"],
+            ["LMP-derived GA", lmp_ga_str, f"LMP date: {lmp_val}"],
+            ["EDD (Naegele's rule)", edd or "—", "From LMP + 280 days"],
+            [
+                "Discordance",
+                disc_value,
+                side_by_side,
+            ],
         ]
-        lt = Table(lmp_rows, colWidths=[58 * mm, 52 * mm, 60 * mm])
-        lt.setStyle(_tbl_style(header_color=_TEAL if not disc_flag else colors.HexColor("#7f1d1d")))
+        # 30 / 25 / 45 column ratios
+        lcol_w = [_CONTENT_W * 0.30, _CONTENT_W * 0.25, _CONTENT_W * 0.45]
+        lt = Table(lmp_rows, colWidths=lcol_w)
+        header_color = _RED if disc_flag else _TEAL
+        lt.setStyle(_tbl_style(header_color=header_color))
         story.append(Spacer(1, 2 * mm))
         story.append(lt)
+        story.append(
+            Paragraph(
+                "<i>EDD calculated from LMP. If GA discordance exceeds 14 days, "
+                "EDD should be revised based on sonographic dating per ACOG/ISUOG "
+                "guidelines.</i>",
+                st["footnote"],
+            )
+        )
 
     story.append(Spacer(1, 3 * mm))
 
@@ -561,44 +765,62 @@ def _section_biometric_findings(story, st, report, lmp=None):
 
 
 def _section_images(story, st, report):
-    story.append(Paragraph("Annotated Ultrasound Images", st["sec"]))
-
-    panel_w = (_CONTENT_W - 8 * mm) / 3  # 3 panels + 2 gaps
-    panel_h = 52 * mm
-
-    def _panel(b64, label):
-        img = _b64_to_image_flowable(b64, panel_w, panel_h) if b64 else None
-        if img is None:
-            # Grey placeholder box
-            placeholder = Table(
-                [["Not\navailable"]],
-                colWidths=[panel_w],
-                rowHeights=[panel_h],
-            )
-            placeholder.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#d1d5db")),
-                        ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 7),
-                        ("TEXTCOLOR", (0, 0), (-1, -1), _GREY),
-                    ]
-                )
-            )
-            return [placeholder, Paragraph(label, st["img_cap"])]
-        return [img, Paragraph(label, st["img_cap"])]
-
+    """Three-panel image section. If all three images are unavailable,
+    the entire section collapses to a single-line note."""
     orig_b64 = getattr(report, "original_image_b64", None)
     overlay_b64 = getattr(report, "overlay_image_b64", None)
     gradcam_b64 = getattr(report, "gradcam_image_b64", None)
 
-    p1 = _panel(orig_b64, "Original ultrasound")
-    p2 = _panel(overlay_b64, "Segmentation overlay")
-    p3 = _panel(gradcam_b64, "GradCAM++ activation")
+    if not any([orig_b64, overlay_b64, gradcam_b64]):
+        story.append(Paragraph("Annotated Ultrasound Images", st["sec"]))
+        _section_rule(story)
+        story.append(
+            Paragraph(
+                "Annotated images not available for this study.",
+                st["bodyI"],
+            )
+        )
+        story.append(Spacer(1, 3 * mm))
+        return
+
+    story.append(Paragraph("Annotated Ultrasound Images", st["sec"]))
+    _section_rule(story)
+
+    panel_w = (_CONTENT_W - 8 * mm) / 3
+    panel_h = 52 * mm
+
+    def _placeholder(label: str):
+        ph = Table(
+            [[Paragraph(label, st["img_cap"])]],
+            colWidths=[panel_w],
+            rowHeights=[panel_h],
+        )
+        ph.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#E5E7EB")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOX", (0, 0), (-1, -1), 0.3, _BORDER),
+                ]
+            )
+        )
+        return ph
+
+    def _panel(b64, missing_label):
+        img = _b64_to_image_flowable(b64, panel_w, panel_h) if b64 else None
+        if img is None:
+            return _placeholder(missing_label)
+        return img
+
+    cells = [
+        _panel(orig_b64, "Original ultrasound\nnot available"),
+        _panel(overlay_b64, "Segmentation overlay\nnot generated"),
+        _panel(gradcam_b64, "GradCAM++ activation\nnot generated"),
+    ]
 
     img_row = Table(
-        [[p1[0], p2[0], p3[0]]],
+        [cells],
         colWidths=[panel_w, panel_w, panel_w],
         rowHeights=[panel_h],
     )
@@ -613,7 +835,13 @@ def _section_images(story, st, report):
         )
     )
     cap_row = Table(
-        [[p1[1], p2[1], p3[1]]],
+        [
+            [
+                Paragraph("Original ultrasound", st["img_cap"]),
+                Paragraph("Segmentation overlay", st["img_cap"]),
+                Paragraph("GradCAM++ activation", st["img_cap"]),
+            ]
+        ],
         colWidths=[panel_w, panel_w, panel_w],
     )
     cap_row.setStyle(
@@ -629,8 +857,9 @@ def _section_images(story, st, report):
     story.append(cap_row)
     story.append(
         Paragraph(
-            "AI-generated segmentation boundary (teal) and activation map (jet colormap). "
-            "Annotated boundaries require verification by a qualified sonographer prior to clinical use.",
+            "AI-generated segmentation boundary (teal) and activation map (jet "
+            "colormap). Annotated boundaries require verification by a qualified "
+            "sonographer prior to clinical use.",
             st["footer"],
         )
     )
@@ -638,11 +867,11 @@ def _section_images(story, st, report):
 
 
 # ── Section 9 — Impression ────────────────────────────────────────────────────
-# Placed before Section 7 in the story so it appears on page 1.
 
 
 def _section_impression(story, st, narrative_impression, report):
     story.append(Paragraph("Impression", st["sec"]))
+    _section_rule(story)
     hc = report.hc_mm
     ga_str = report.ga_str or "—"
     ga_weeks = report.ga_weeks or 0.0
@@ -656,11 +885,11 @@ def _section_impression(story, st, narrative_impression, report):
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), _IMPRESSION_BG),
-                ("BOX", (0, 0), (-1, -1), 1.5, _TEAL_BORDER),
+                ("BOX", (0, 0), (-1, -1), 1, _TEAL),
                 ("LEFTPADDING", (0, 0), (-1, -1), 8),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
             ]
         )
     )
@@ -671,15 +900,17 @@ def _section_impression(story, st, narrative_impression, report):
 # ── Section 7 — Clinical Interpretation ───────────────────────────────────────
 
 
-def _section_interpretation(story, st, llm, model_name, p1, p2, p3, report):
+def _section_interpretation(story, st, llm, model_name, p1, p2, p3, report, discordance_note=None):
+    """Render Clinical Interpretation. p1=BIOMETRIC ASSESSMENT (terse),
+    p2=ACTIVATION MAP (terse). p3 optional compression deployment context."""
     acc = _TEAL if llm else _GREY
     mode_label = (
         "AI-Authored Clinical Narrative — Claude Haiku" if llm else "Automated Template Report"
     )
     m = _meta(model_name)
-    is_temporal = m["type"] == "cine"
 
     story.append(Paragraph("Clinical Interpretation", st["sec"]))
+    _section_rule(story)
 
     # Mode badge
     badge_data = [
@@ -708,30 +939,20 @@ def _section_interpretation(story, st, llm, model_name, p1, p2, p3, report):
     p1_clean = _strip_markdown(p1) if p1 else "—"
     p2_clean = _strip_markdown(p2) if p2 else "—"
 
-    story.append(
-        Paragraph(
-            "<b>Biometric assessment</b>"
-            if not is_temporal
-            else "<b>Biometric assessment and temporal concordance</b>",
-            st["label"],
-        )
-    )
+    if discordance_note:
+        # Append discordance recommendation to biometric assessment
+        p1_clean = p1_clean.rstrip(". ") + ". " + discordance_note
+
+    story.append(Paragraph("<b>BIOMETRIC ASSESSMENT</b>", st["label"]))
     story.append(Paragraph(p1_clean, st["body"]))
 
     story.append(Spacer(1, 2 * mm))
-    story.append(
-        Paragraph(
-            "<b>Activation map interpretation</b>"
-            if not is_temporal
-            else "<b>Cine-loop analysis — clinical rationale</b>",
-            st["label"],
-        )
-    )
+    story.append(Paragraph("<b>ACTIVATION MAP</b>", st["label"]))
     story.append(Paragraph(p2_clean, st["body"]))
 
     if p3 and m["pruned"]:
         story.append(Spacer(1, 2 * mm))
-        story.append(Paragraph("<b>Deployment efficiency — clinical context</b>", st["label"]))
+        story.append(Paragraph("<b>DEPLOYMENT CONTEXT</b>", st["label"]))
         story.append(Paragraph(_strip_markdown(p3), st["green"]))
 
     story.append(Spacer(1, 3 * mm))
@@ -743,15 +964,19 @@ def _section_interpretation(story, st, llm, model_name, p1, p2, p3, report):
 def _section_ai_performance(story, st, model_name, elapsed_ms):
     m = _meta(model_name)
     story.append(Paragraph("AI System Validation Summary", st["sec"]))
+    _section_rule(story)
     rows = [
         ["Metric", "Result", "Clinical Reference"],
         ["Segmentation accuracy (validation cohort)", m["dice"], f"HC18 — {m['dataset']}"],
         ["Mean measurement deviation", m["mae"], "ISUOG acceptable threshold: ±3 mm"],
         ["ISUOG clinical threshold (±3 mm)", f"✓ {m['isuog']}", "ISUOG Practice Guidelines 2010"],
         ["Validation cohort", "199 images (held-out test set)", "HC18 — Radboud UMC, Netherlands"],
-        ["Runtime (this image)", f"{elapsed_ms:.0f} ms" if elapsed_ms else "—", "CPU inference"],
     ]
-    t = Table(rows, colWidths=[72 * mm, 38 * mm, 60 * mm])
+    if elapsed_ms:
+        rows.append(["Inference runtime (this image)", f"{elapsed_ms:.0f} ms", "CPU inference"])
+
+    col_w = [_CONTENT_W * 0.40, _CONTENT_W * 0.25, _CONTENT_W * 0.35]
+    t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
     story.append(Spacer(1, 2 * mm))
@@ -764,14 +989,20 @@ def _section_signoff(story, st, signed_meta: dict):
     story.append(Spacer(1, 4 * mm))
     story.append(HRFlowable(width="100%", thickness=1.2, color=_PRUNED, spaceAfter=4))
     story.append(Paragraph("Clinical Sign-off", st["sec"]))
+    _section_rule(story)
     rows = [
-        ["Signed by", signed_meta.get("signed_by") or "—"],
-        ["Signed at", signed_meta.get("signed_at") or "—"],
+        ["Signed by", Paragraph(signed_meta.get("signed_by") or "—", st["body"])],
+        ["Signed at", Paragraph(signed_meta.get("signed_at") or "—", st["body"])],
     ]
     note = signed_meta.get("signoff_note")
     if note:
-        rows.append(["Clinician note", note])
-    t = Table(rows, colWidths=[40 * mm, 130 * mm])
+        rows.append(
+            [
+                "Verification note (clinical)",
+                Paragraph(note, st["signoff_note"]),
+            ]
+        )
+    t = Table(rows, colWidths=[55 * mm, _CONTENT_W - 55 * mm])
     t.setStyle(
         TableStyle(
             [
@@ -783,8 +1014,8 @@ def _section_signoff(story, st, signed_meta: dict):
                 ("GRID", (0, 0), (-1, -1), 0.3, _PRUNED),
                 ("LEFTPADDING", (0, 0), (-1, -1), 5),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
@@ -803,8 +1034,8 @@ def _section_regulatory(story, st, ga_weeks=0.0):
             "RESEARCH PROTOTYPE — NOT FOR CLINICAL USE. This system has not received FDA 510(k) "
             "clearance or CE marking under EU MDR/IVDR. It is classified as a Software as a "
             "Medical Device (SaMD) Class II candidate under 21 CFR Part 892. All automated "
-            f"measurements must be independently verified by a qualified healthcare professional "
-            f"before incorporation into any clinical decision. Gestational age estimates carry an "
+            "measurements must be independently verified by a qualified healthcare professional "
+            "before incorporation into any clinical decision. Gestational age estimates carry an "
             f"inherent {ci_str}. This report does not constitute a diagnostic opinion.",
             st["footer"],
         )
@@ -812,9 +1043,9 @@ def _section_regulatory(story, st, ga_weeks=0.0):
     story.append(
         Paragraph(
             "HC18 dataset — Radboud University Medical Center, Nijmegen, Netherlands. "
-            f"For research and evaluation purposes only. "
-            f"System: TemporalFetaSegNet / Fetal Head Clinical AI v3.0 — "
-            f"Tarun Sadarla, MS Artificial Intelligence, University of North Texas, 2026. "
+            "For research and evaluation purposes only. "
+            "System: TemporalFetaSegNet / Fetal Head Clinical AI v3.1 — "
+            "Tarun Sadarla, MS Artificial Intelligence, University of North Texas, 2026. "
             f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
             st["footer"],
         )
@@ -828,6 +1059,7 @@ def _appendix_technical(story, st, model_name, elapsed_ms):
     m = _meta(model_name)
     story.append(PageBreak())
     story.append(Paragraph("Appendix A — AI Model Technical Specifications", st["sec"]))
+    _section_rule(story)
     story.append(
         Paragraph(
             "The following technical metrics are provided for AI/ML validation teams and "
@@ -845,7 +1077,8 @@ def _appendix_technical(story, st, model_name, elapsed_ms):
         ["Validation dataset", m["dataset"]],
         ["Runtime on CPU", f"{elapsed_ms:.0f} ms" if elapsed_ms else "—"],
     ]
-    t = Table(rows, colWidths=[80 * mm, 90 * mm])
+    col_w = [_CONTENT_W * 0.45, _CONTENT_W * 0.55]
+    t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
 
@@ -853,7 +1086,18 @@ def _appendix_technical(story, st, model_name, elapsed_ms):
 # ── LLM narrative functions ────────────────────────────────────────────────────
 
 
-def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> Optional[str]:
+_CLINICAL_SYSTEM_PROMPT = (
+    "You are generating the Clinical Interpretation section of a fetal head circumference "
+    "biometry report. The audience is the referring obstetrician, not a patient. "
+    "Write in terse, structured clinical prose — the style of a radiologist's dictated report, "
+    "not an essay. Do not use markdown headers, bullet points, bold text, or any markdown "
+    "syntax. Plain prose only. No preamble, no 'In conclusion', no self-reference to being "
+    "an AI. Use direct clinical language, no passive constructions like 'automated biometric "
+    "analysis yielded'."
+)
+
+
+def _call_llm(api_key: str, prompt: str, max_tokens: int = 250) -> Optional[str]:
     try:
         import anthropic
 
@@ -861,12 +1105,7 @@ def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> Optional[str]
         r = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
-            system=(
-                "You are a clinical report assistant for an AI-assisted fetal biometry system. "
-                "Write in formal clinical prose only. Do NOT use any markdown formatting — "
-                "no headers (#), no bold (**), no bullet points (-), no italic (*). "
-                "Output plain text paragraphs only."
-            ),
+            system=_CLINICAL_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
         return r.content[0].text.strip()
@@ -877,40 +1116,36 @@ def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> Optional[str]
 def _llm_static_narrative(hc, ga_str, ga_weeks, trim, gradcam_ok, model_name, elapsed_ms, api_key):
     m = _meta(model_name)
     ci_str = _ga_ci_string(ga_weeks)
-    ctx = {
-        "Early (<20w)": "first-trimester biometric assessment range",
-        "Mid (20–30w)": "second-trimester sonographic window",
-        "Late (>30w)": "third-trimester range where acoustic shadowing may affect delineation",
-    }.get(trim, "")
 
     p1 = _call_llm(
         api_key,
         (
-            f"Write ONE paragraph (5 sentences) for a clinical audience — obstetrician or senior "
-            f"sonographer. Use formal medical terminology. Do NOT use any machine learning terms "
-            f"(Dice, MAE, IoU, neural network, model). Do NOT make diagnostic conclusions or suggest "
-            f"pathology. End requiring sonographer verification.\n\n"
-            f"Data: HC = {hc:.1f} mm, GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock (1984) "
-            f"nomogram, trimester = {trim} ({ctx}). GA confidence interval: {ci_str}. "
-            f"System MAE = {m['mae']} (within ISUOG ±3 mm threshold).\n\n"
-            f"Structure: (1) HC and GA with biometric context, (2) trimester-specific GA accuracy "
-            f"({ci_str}), (3) automated system validation status, (4) limitations and advisory "
-            f"for clinical correlation. Plain prose only."
+            "BIOMETRIC ASSESSMENT — write 2-3 sentences maximum.\n\n"
+            f"Data: HC = {hc:.1f} mm, GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock 1984. "
+            f"GA confidence interval for this trimester: {ci_str}. "
+            f"System mean deviation: {m['mae']} (within ISUOG ±3 mm threshold).\n\n"
+            "State: HC value, GA estimate with CI, ISUOG compliance status, and one sentence "
+            "on clinical correlation requirement. Do NOT explain the Hadlock nomogram. "
+            "Example tone: 'HC 218.6 mm. GA estimated at 23+0 weeks (Hadlock 1984; ±10–14 days "
+            "for this trimester). Within ISUOG ±3 mm biometry threshold. Clinical correlation "
+            "with menstrual dating and prior biometry recommended.'"
         ),
+        max_tokens=180,
     ) or _rule_static_p1(hc, ga_str, ga_weeks, trim)
 
     p2 = _call_llm(
         api_key,
         (
-            f"Write ONE paragraph (4 sentences) for a clinical audience interpreting a "
-            f"GradCAM++ activation map from an automated fetal head circumference measurement. "
-            f"{'The activation map was generated for this acquisition.' if gradcam_ok else 'The activation map could not be generated for this image.'}\n\n"
-            f"Explain: (1) what the activation pattern indicates about the system's focus on "
-            f"the hyperechoic calvarium interface, (2) why anatomically appropriate activation "
-            f"supports confidence in the measurement, (3) clinical implications if atypical. "
-            f"Use terms: calvarium, hyperechoic interface, cranial ossification, acoustic impedance "
-            f"contrast. No ML jargon. Plain prose only."
+            "ACTIVATION MAP — write 1-2 sentences only.\n\n"
+            f"GradCAM activation map {'was generated' if gradcam_ok else 'could NOT be generated'} "
+            "for this acquisition.\n\n"
+            "State whether the AI confidence map is anatomically appropriate "
+            "(localised to calvarium perimeter) or shows any atypical pattern. "
+            "Do NOT explain what GradCAM is. Example tone: 'AI confidence map localised to "
+            "hyperechoic calvarium perimeter — anatomically appropriate. No atypical focus on "
+            "intracranial soft tissue structures.'"
         ),
+        max_tokens=120,
     ) or _rule_static_p2(gradcam_ok)
 
     p3 = None
@@ -918,25 +1153,25 @@ def _llm_static_narrative(hc, ga_str, ga_weeks, trim, gradcam_ok, model_name, el
         p3 = _call_llm(
             api_key,
             (
-                f"Write ONE paragraph (3-4 sentences) for a hospital technology committee. "
-                f"Compressed model: {m['compression']}, accuracy {m['mae']}, CPU inference "
-                f"{elapsed_ms:.0f} ms. Explain clinical deployment significance for portable "
-                f"and point-of-care platforms. Clinical language only. No ML jargon."
+                "DEPLOYMENT CONTEXT — write 2 sentences for a clinical technology committee.\n\n"
+                f"Compressed model: {m['compression']}, mean deviation {m['mae']}, "
+                f"CPU inference {elapsed_ms:.0f} ms. State clinical deployment significance for "
+                "portable and point-of-care platforms. Plain clinical language, no ML jargon."
             ),
-            max_tokens=280,
+            max_tokens=140,
         )
 
     impression = _call_llm(
         api_key,
         (
-            f"Write 2-3 sentences for the Impression box of a clinical ultrasound report. "
-            f"Plain clinical language for a referring obstetrician. No markdown. "
-            f"Include: HC ({hc:.1f} mm), GA ({ga_str}), ISUOG compliance, and a verification requirement.\n"
-            f"Example format: 'AI-assisted head circumference measurement: X mm. Estimated "
-            f"gestational age: Y. Automated measurement requires verification by a qualified "
-            f"sonographer prior to clinical use.'"
+            "IMPRESSION — write 2-3 sentences for the Impression box of a clinical "
+            "ultrasound report. Plain clinical language for a referring obstetrician.\n\n"
+            f"Include: HC ({hc:.1f} mm), GA ({ga_str}), ISUOG compliance, and a verification "
+            "requirement. Example tone: 'AI-assisted head circumference measurement: "
+            "X mm. Estimated gestational age: Y. Automated measurement requires verification "
+            "by a qualified sonographer prior to clinical use.'"
         ),
-        max_tokens=150,
+        max_tokens=130,
     ) or _rule_impression(hc, ga_str, ga_weeks, trim)
 
     return p1, p2, p3, impression
@@ -949,38 +1184,30 @@ def _llm_cine_narrative(
     ci_str = _ga_ci_string(ga_weeks)
     rel_desc = "excellent" if rel > 0.97 else "good" if rel > 0.93 else "moderate"
     std_desc = "highly stable" if std < 2.0 else "acceptable" if std < 5.0 else "variable"
-    ctx = {
-        "Early (<20w)": "first-trimester biometric assessment",
-        "Mid (20–30w)": "second-trimester sonographic window",
-        "Late (>30w)": "third-trimester range",
-    }.get(trim, "")
 
     p1 = _call_llm(
         api_key,
         (
-            f"Write ONE paragraph (5 sentences) for a clinical audience. Formal medical "
-            f"terminology. No ML jargon. No diagnostic conclusions. End requiring verification.\n\n"
-            f"Data: Consensus HC = {hc:.1f} mm from {n_frames}-frame acquisition. "
-            f"GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock (1984). GA CI: {ci_str}. "
-            f"Trimester: {trim} ({ctx}). Frame concordance: {rel_desc} "
-            f"(variability = {std:.2f} mm, {std_desc}). System MAE = {m['mae']}.\n\n"
-            f"Structure: (1) HC and GA from multi-frame consensus, (2) GA accuracy ({ci_str}), "
-            f"(3) inter-frame concordance in clinical terms, (4) validation status, "
-            f"(5) requirement for clinical correlation. Plain prose only."
+            "BIOMETRIC ASSESSMENT — write 2-3 sentences maximum.\n\n"
+            f"Data: Consensus HC = {hc:.1f} mm from {n_frames}-frame cine acquisition. "
+            f"GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock 1984. CI: {ci_str}. "
+            f"Frame concordance: {rel_desc} ({std:.2f} mm inter-frame deviation, {std_desc}). "
+            f"System mean deviation: {m['mae']}.\n\n"
+            "Cover: HC + GA with CI, frame concordance, ISUOG compliance, clinical correlation "
+            "requirement. Do NOT explain Hadlock or temporal attention."
         ),
+        max_tokens=200,
     ) or _rule_cine_p1(hc, ga_str, ga_weeks, trim, rel, std)
 
     p2 = _call_llm(
         api_key,
         (
-            f"Write ONE paragraph (4 sentences) explaining the clinical rationale for "
-            f"sequential multi-frame fetal head measurement vs single-frame biometry.\n\n"
-            f"{n_frames} frames analysed. Frame HC variability = {std:.2f} mm. "
-            f"Address: (1) how probe micro-variation and fetal movement introduce inter-frame "
-            f"variation, (2) how automated frame weighting may reduce operator variability, "
-            f"(3) clinical scenarios where cine analysis may be advantageous. "
-            f"Use cautious language. Plain prose only. No ML terms."
+            "ACTIVATION MAP — write 1-2 sentences. The temporal model produced consistent "
+            f"activation across {n_frames} frames. State whether the activation pattern is "
+            "anatomically appropriate (localised to calvarium perimeter across frames) "
+            "or shows variability suggesting acoustic challenge. No ML jargon."
         ),
+        max_tokens=120,
     ) or _rule_cine_p2(rel, std, n_frames)
 
     p3 = None
@@ -988,23 +1215,22 @@ def _llm_cine_narrative(
         p3 = _call_llm(
             api_key,
             (
-                f"Write ONE paragraph (3-4 sentences) for a clinical technology committee. "
-                f"Temporal cine model: {m['compression']}, {m['dice']} accuracy, {m['mae']} deviation, "
-                f"{elapsed_ms:.0f} ms per 16-frame clip. Explain deployment significance for "
-                f"portable platforms. Clinical language only."
+                "DEPLOYMENT CONTEXT — write 2 sentences for a clinical technology committee.\n\n"
+                f"Temporal compressed model: {m['compression']}, mean deviation {m['mae']}, "
+                f"CPU inference {elapsed_ms:.0f} ms per 16-frame clip. "
+                "Plain clinical language."
             ),
-            max_tokens=280,
+            max_tokens=140,
         )
 
     impression = _call_llm(
         api_key,
         (
-            f"Write 2-3 sentences for the Impression box of a clinical report. Plain language "
-            f"for a referring obstetrician. No markdown. "
-            f"HC = {hc:.1f} mm from {n_frames}-frame cine analysis, GA = {ga_str}, "
-            f"frame concordance = {rel_desc}."
+            "IMPRESSION — 2-3 sentences for the Impression box. Plain language for "
+            f"a referring obstetrician. HC = {hc:.1f} mm from {n_frames}-frame cine analysis, "
+            f"GA = {ga_str}, frame concordance = {rel_desc}."
         ),
-        max_tokens=150,
+        max_tokens=130,
     ) or _rule_impression(hc, ga_str, ga_weeks, trim)
 
     return p1, p2, p3, impression
@@ -1017,7 +1243,6 @@ def _llm_comparison_narrative(results: dict, api_key: str):
         results.get("phase2", {}),
         results.get("phase4b", {}),
     )
-    hc_vals = [r.get("hc_mm") for r in [r0, r4a, r2, r4b] if r.get("hc_mm")]
     cine_std = r4b.get("hc_std_mm") or r2.get("hc_std_mm") or 0.0
     ms_p0, ms_p4a, ms_p2, ms_p4b = (
         r0.get("elapsed_ms", 0),
@@ -1036,11 +1261,10 @@ def _llm_comparison_narrative(results: dict, api_key: str):
             f"Cine HC: {r2.get('hc_mm', 0):.1f} mm ({ms_p2:.0f} ms), "
             f"compressed {r4b.get('hc_mm', 0):.1f} mm ({ms_p4b:.0f} ms). "
             f"Cine inter-frame variability: {cine_std:.2f} mm.\n\n"
-            f"Provide a nuanced recommendation: when is single-frame sufficient vs when cine "
-            f"may offer incremental benefit. Cautious, evidence-appropriate language. "
-            f"No ML jargon. Plain prose."
+            "Recommend when single-frame is sufficient vs when cine offers benefit. "
+            "Cautious clinical language. No ML jargon."
         ),
-        max_tokens=420,
+        max_tokens=350,
     ) or (
         "Single-frame analysis is appropriate for standard second-trimester screening with "
         "adequate acoustic access. Multi-frame cine analysis may provide incremental benefit "
@@ -1056,7 +1280,7 @@ def _llm_comparison_narrative(results: dict, api_key: str):
             f"Explain clinical IT deployment significance: no GPU infrastructure required, "
             f"portable platform compatibility, LMIC relevance. Clinical language only."
         ),
-        max_tokens=320,
+        max_tokens=280,
     ) or (
         "Compressed model variants enable deployment on standard CPU hardware without GPU "
         "infrastructure, supporting integration in portable ultrasound platforms and "
@@ -1069,96 +1293,52 @@ def _llm_comparison_narrative(results: dict, api_key: str):
 
 
 def _rule_static_p1(hc, ga_str, ga_weeks, trim):
+    """Terse biometric assessment (2-3 sentences)."""
     ci_str = _ga_ci_string(ga_weeks) if ga_weeks else "±2 weeks"
-    ctx = {
-        "Early (<20w)": "consistent with first-trimester biometric parameters",
-        "Mid (20–30w)": "within the optimal second-trimester sonographic assessment window",
-        "Late (>30w)": "consistent with third-trimester biometry, where increased acoustic "
-        "shadowing from the calvarium may influence boundary delineation",
-    }.get(trim, "")
+    hc_disp = f"{hc:.1f} mm" if hc else "—"
     return (
-        f"Automated biometric analysis of the submitted fetal head ultrasound yielded "
-        f"a head circumference of {hc:.1f} mm, corresponding to an estimated gestational "
-        f"age of {ga_str} ({ga_weeks:.1f} weeks) derived from the Hadlock (1984) biometric "
-        f"nomogram, {ctx}. "
-        f"The gestational age estimate carries a confidence interval of {ci_str} for this "
-        f"trimester, consistent with established sonographic biometry accuracy standards. "
-        f"The measurement was produced by an automated calvarium boundary detection system "
-        f"validated on an independent cohort of 199 fetal head ultrasound images (HC18), "
-        f"with a mean absolute measurement deviation within the ISUOG clinically acceptable "
-        f"biometry threshold of ±3 mm for second-trimester assessment. "
-        f"These automated findings require clinical correlation with menstrual dating, "
-        f"prior sonographic biometry, and direct verification by a qualified sonographer "
-        f"before incorporation into clinical management."
+        f"HC {hc_disp}. GA estimated at {ga_str} (Hadlock 1984; {ci_str}). "
+        f"Within ISUOG ±3 mm biometry threshold. "
+        f"Clinical correlation with menstrual dating and prior biometry recommended."
     )
 
 
 def _rule_static_p2(gradcam_ok):
+    """Terse activation map interpretation (1-2 sentences)."""
     if gradcam_ok:
         return (
-            "The gradient-weighted activation map generated for this measurement "
-            "delineates the spatial regions of the ultrasound image that most strongly "
-            "influenced the automated identification of the calvarium boundary. "
-            "High-activation regions correspond to the hyperechoic calvarium echo — "
-            "the outer cranial bone interface providing the principal anatomical landmark "
-            "for head circumference measurement. "
-            "Low-activation regions correspond to intracranial soft-tissue structures "
-            "that do not contribute to the biometric perimeter. "
-            "This activation pattern is anatomically congruent with appropriate model "
-            "behaviour and supports confidence in the automated boundary selection."
+            "AI confidence map localised to hyperechoic calvarium perimeter — "
+            "anatomically appropriate. No atypical focus on intracranial soft-tissue structures."
         )
     return (
-        "A gradient-weighted activation map could not be generated for this image, "
-        "which may occur when the predicted segmentation region is insufficient for "
-        "reliable spatial attribution — often associated with challenging acoustic windows "
-        "or partial calvarium visualisation. "
-        "In the absence of activation map confirmation, the automated measurement "
-        "result should be interpreted with heightened caution, and direct sonographer "
-        "review of the original image is recommended."
+        "AI confidence map could not be generated for this acquisition; "
+        "interpret the automated measurement with heightened caution and direct sonographer review."
     )
 
 
 def _rule_cine_p1(hc, ga_str, ga_weeks, trim, rel, std):
+    """Terse temporal biometric assessment."""
     ci_str = _ga_ci_string(ga_weeks) if ga_weeks else "±2 weeks"
     rel_desc = "excellent" if rel > 0.97 else "good" if rel > 0.93 else "moderate"
-    std_desc = (
-        "highly stable (<2 mm inter-frame deviation)"
-        if std < 2.0
-        else f"acceptably stable ({std:.1f} mm inter-frame deviation)"
-        if std < 5.0
-        else f"variable ({std:.1f} mm inter-frame deviation — review recommended)"
-    )
-    ctx = {
-        "Early (<20w)": "consistent with first-trimester biometric parameters",
-        "Mid (20–30w)": "within the optimal second-trimester sonographic assessment window",
-        "Late (>30w)": "consistent with third-trimester biometric parameters",
-    }.get(trim, "")
+    hc_disp = f"{hc:.1f} mm" if hc else "—"
     return (
-        f"Sequential cine-loop analysis of a 16-frame ultrasound acquisition yielded "
-        f"a consensus fetal head circumference of {hc:.1f} mm, corresponding to an "
-        f"estimated gestational age of {ga_str} ({ga_weeks:.1f} weeks) by Hadlock (1984), "
-        f"{ctx}. The GA estimate carries a confidence interval of {ci_str}. "
-        f"Inter-frame measurement concordance was {rel_desc}, with calvarium boundary "
-        f"measurements {std_desc}. "
-        f"The consensus measurement from temporal integration of sequential frames provides "
-        f"greater robustness against single-frame artefacts compared to static biometry. "
-        f"Clinical correlation with menstrual dating and direct sonographer verification "
-        f"are required before incorporation into clinical management."
+        f"Consensus HC {hc_disp} from 16-frame cine. GA estimated at {ga_str} "
+        f"(Hadlock 1984; {ci_str}). Inter-frame concordance {rel_desc} ({std:.2f} mm deviation). "
+        "Within ISUOG ±3 mm threshold. Clinical correlation with menstrual dating recommended."
     )
 
 
 def _rule_cine_p2(rel, std, n_frames):
+    """Terse temporal activation interpretation."""
+    if std < 2.0:
+        stability = "stable"
+    elif std < 5.0:
+        stability = "acceptably stable"
+    else:
+        stability = "variable — review advised"
     return (
-        f"The temporal analysis system evaluated all {n_frames} frames from the "
-        f"acquisition sequence and applied automated preferential weighting toward frames "
-        f"exhibiting superior calvarium boundary delineation — analogous to the sonographer's "
-        f"practice of identifying the optimal image plane before freezing for measurement. "
-        f"The observed inter-frame measurement variability of {std:.2f} mm is attributable "
-        f"to minor changes in the imaged calvarial cross-section from probe micro-motion "
-        f"and fetal head micro-movement during acquisition. "
-        f"Automated temporal frame weighting reduces the operator-dependent component of "
-        f"measurement variability and may be of particular value in cases where acoustic "
-        f"access is intermittently limited by fetal position or maternal habitus."
+        f"Frame-to-frame measurement {stability} across {n_frames} frames "
+        f"({std:.2f} mm deviation). Activation pattern consistent with calvarium boundary."
     )
 
 
@@ -1167,12 +1347,9 @@ def _rule_compression_note(model_name, elapsed_ms):
     if not m["pruned"]:
         return None
     return (
-        f"This report was generated using a parameter-efficient model variant with "
-        f"{m['compression']}. The optimised model achieves {m['dice']} segmentation "
-        f"accuracy with {m['mae']} mean measurement deviation — clinically equivalent "
-        f"to the full-size model and within the ISUOG ±3 mm threshold. "
-        f"Inference was completed in {elapsed_ms:.0f} ms on standard CPU hardware, "
-        f"supporting deployment on portable ultrasound platforms."
+        f"{m['compression']}, {m['mae']} mean deviation, CPU inference "
+        f"{elapsed_ms:.0f} ms. Clinically equivalent to baseline; supports deployment on "
+        "portable and point-of-care platforms."
     )
 
 
@@ -1182,9 +1359,23 @@ def _rule_impression(hc, ga_str, ga_weeks, trim):
     return (
         f"AI-assisted head circumference measurement: {hc_str}. "
         f"Estimated gestational age: {ga_str} (confidence interval {ci_str}). "
-        f"Measurement within ISUOG clinically acceptable biometry threshold (±3 mm). "
-        f"Automated measurement requires verification by a qualified sonographer "
-        f"prior to clinical use."
+        "Measurement within ISUOG clinically acceptable biometry threshold (±3 mm). "
+        "Automated measurement requires verification by a qualified sonographer "
+        "prior to clinical use."
+    )
+
+
+def _discordance_recommendation(lmp: Optional[str], ga_weeks: float) -> Optional[str]:
+    """Return a discordance recommendation sentence if LMP-GA disagreement exceeds 14 days."""
+    if not lmp or not ga_weeks:
+        return None
+    disc_days = _ga_discordance_days(lmp, ga_weeks)
+    if disc_days is None or disc_days <= 14:
+        return None
+    weeks_days = _format_weeks_days(disc_days)
+    return (
+        f"GA-LMP discordance of {weeks_days} exceeds the 14-day threshold. "
+        "Recommend clinical review; consider revision of gestational dates per ACOG guidelines."
     )
 
 
@@ -1204,7 +1395,14 @@ def _build_story(
     is_temporal: bool,
     report=None,
 ) -> list:
-    """Assemble the complete story list for both static and cine reports."""
+    """Assemble the complete story list for both static and cine reports.
+
+    Page layout (v3.1):
+      Page 1  Header + Patient/Exam + Indication + Technical + Biometric Findings
+      Page 2  Images + Impression + Clinical Interpretation
+      Page 3  AI System Validation + Sign-off + Regulatory
+      Page 4  Appendix A (compressed only)
+    """
     llm = use_llm and bool(api_key)
     st = _styles(llm)
     m = _meta(model_name)
@@ -1221,12 +1419,11 @@ def _build_story(
     ood_flag = result.get("ood_flag", False)
     n_frames = len(result.get("per_frame_hc") or []) or 16
 
-    # Accession number and report_mode from the report object if available
     accession = getattr(report, "accession_number", None)
     stored_mode = getattr(report, "report_mode", "template")
     effective_llm = llm or (stored_mode == "llm")
 
-    # Resolve narrative
+    # Resolve narrative — supplied tuple, LLM call, or rule-based
     if narrative is not None:
         if len(narrative) >= 4:
             p1, p2, p3, p_impression = narrative[0], narrative[1], narrative[2], narrative[3]
@@ -1252,9 +1449,18 @@ def _build_story(
         p3 = _rule_compression_note(model_name, elapsed)
         p_impression = _rule_impression(hc, ga_str, ga_weeks, trim)
 
+    # GA-LMP discordance recommendation — appended to BIOMETRIC ASSESSMENT
+    # in both template and LLM modes.
+    lmp = getattr(report, "lmp", None) if report is not None else None
+    discordance_note = _discordance_recommendation(lmp, ga_weeks)
+
+    # HC-only flag — true when no BPD was supplied
+    bpd_mm = getattr(report, "bpd_mm", None) if report is not None else None
+    hc_only = bpd_mm is None or bpd_mm == 0
+
     story = []
 
-    # ── PAGE 1: Sections 1–6 + 9 ──────────────────────────────────────────────
+    # ─── PAGE 1: Header + Patient + Indication + Technical + Biometric ───────
     _section_header(
         story,
         st,
@@ -1264,6 +1470,7 @@ def _build_story(
         accession,
         stored_mode,
         ood_flag=ood_flag,
+        hc_only=hc_only,
     )
 
     if report is not None:
@@ -1271,8 +1478,8 @@ def _build_story(
         _section_clinical_indication(story, st, report)
         _section_technical_params(story, st, report)
     else:
-        # Minimal patient block when no report object (backwards compat)
-        story.append(Paragraph("Patient & Exam Information", st["sec"]))
+        story.append(Paragraph("Patient &amp; Exam Information", st["sec"]))
+        _section_rule(story)
         story.append(
             Paragraph(
                 f"Pixel spacing: {pixel_spacing:.4f} mm/pixel  |  "
@@ -1289,26 +1496,34 @@ def _build_story(
     if is_temporal:
         _section_temporal_table(story, st, rel, std, n_frames)
 
+    # ─── PAGE 2: Images + Impression + Clinical Interpretation ───────────────
+    story.append(PageBreak())
     _section_images(story, st, report if report is not None else _NoImages())
-
-    # Impression on page 1 so referring physician sees it immediately
     _section_impression(
         story, st, p_impression, _BiometricProxy(hc, ga_str, ga_weeks, trim, conf_lbl, report)
     )
+    _section_interpretation(
+        story,
+        st,
+        effective_llm,
+        model_name,
+        p1,
+        p2,
+        p3,
+        report,
+        discordance_note=discordance_note,
+    )
 
-    # ── PAGE 2: Sections 7–8 ─────────────────────────────────────────────────
+    # ─── PAGE 3: AI System Validation + Sign-off + Regulatory ────────────────
     story.append(PageBreak())
-    _section_interpretation(story, st, effective_llm, model_name, p1, p2, p3, report)
     _section_ai_performance(story, st, model_name, elapsed)
 
-    # Sign-off (section 10)
     if signed_meta:
         _section_signoff(story, st, signed_meta)
 
-    # Regulatory footer (section 11)
     _section_regulatory(story, st, ga_weeks=ga_weeks)
 
-    # Technical appendix (page 3, only if compressed model)
+    # ─── PAGE 4: Appendix A (only when compressed model used) ────────────────
     if m["pruned"]:
         _appendix_technical(story, st, model_name, elapsed)
 
@@ -1316,8 +1531,7 @@ def _build_story(
 
 
 class _BiometricProxy:
-    """Minimal proxy so _section_biometric_findings / _section_impression work
-    when called without a full report DB object."""
+    """Minimal proxy so section builders work without a full report DB object."""
 
     def __init__(self, hc, ga_str, ga_weeks, trim, conf, report=None):
         self.hc_mm = hc
@@ -1326,8 +1540,11 @@ class _BiometricProxy:
         self.trimester = trim
         self.confidence_label = conf
         self.lmp = getattr(report, "lmp", None)
+        self.pixel_spacing_mm = getattr(report, "pixel_spacing_mm", None)
+        self.pixel_spacing_dicom_derived = getattr(report, "pixel_spacing_dicom_derived", False)
+        self.bpd_mm = getattr(report, "bpd_mm", None)
+        self.fetal_presentation = getattr(report, "fetal_presentation", None)
 
-    # Fallback attrs used elsewhere
     patient_name = "—"
     patient_id = None
     patient_dob = None
@@ -1338,8 +1555,6 @@ class _BiometricProxy:
     study_date = "—"
     us_approach = None
     image_quality = None
-    pixel_spacing_mm = None
-    pixel_spacing_dicom_derived = False
     original_image_b64 = None
     overlay_image_b64 = None
     gradcam_image_b64 = None
@@ -1365,6 +1580,7 @@ def _section_temporal_table(story, st, rel, std, n_frames):
         "Highly stable" if std < 2.0 else "Acceptable" if std < 5.0 else "Variable — review advised"
     )
     story.append(Paragraph("Temporal Acquisition Analysis", st["sec"]))
+    _section_rule(story)
     rows = [
         ["Parameter", "Value", "Clinical Interpretation"],
         ["Frames analysed", str(n_frames), "Sequential cine acquisition"],
@@ -1372,7 +1588,8 @@ def _section_temporal_table(story, st, rel, std, n_frames):
         ["Frame-to-frame HC variability", f"{std:.2f} mm", std_label],
         ["Consensus method", "Temporal mean probability", "Mean prediction across frames"],
     ]
-    t = Table(rows, colWidths=[58 * mm, 42 * mm, 70 * mm])
+    col_w = [_CONTENT_W * 0.30, _CONTENT_W * 0.25, _CONTENT_W * 0.45]
+    t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
     story.append(Spacer(1, 3 * mm))
@@ -1394,18 +1611,7 @@ def generate_static_report(
     signed_meta: Optional[dict] = None,
     report=None,
 ) -> bytes:
-    """PDF report for static single-frame analysis (Phase 0 / Phase 4a).
-
-    Parameters
-    ----------
-    narrative : optional pre-rendered (p1, p2, p3, impression) tuple. If
-        provided, skips the LLM call and renders the supplied paragraphs
-        deterministically. Used by the /reports/{id}/pdf endpoint.
-    draft : overlay a DRAFT watermark on every page when True.
-    signed_meta : dict with signed_by/signed_at/signoff_note; appends sign-off block.
-    report : Report DB object. When present, enables all 11 sections including
-        patient demographics, images, and clinical indication.
-    """
+    """PDF report for static single-frame analysis (Phase 0 / Phase 4a)."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1447,10 +1653,7 @@ def generate_cine_report(
     signed_meta: Optional[dict] = None,
     report=None,
 ) -> bytes:
-    """PDF report for temporal cine-loop analysis (Phase 2 / Phase 4b).
-
-    See generate_static_report for parameter semantics.
-    """
+    """PDF report for temporal cine-loop analysis (Phase 2 / Phase 4b)."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1516,7 +1719,6 @@ def generate_comparison_report(
 
     story = []
 
-    # Header
     header_data = [
         [
             Paragraph("Fetal Head Circumference — Four-Model Comparative Report", st["title"]),
@@ -1541,7 +1743,7 @@ def generate_comparison_report(
         )
     )
     story.append(ht)
-    story.append(Spacer(1, 2 * mm))
+    story.append(HRFlowable(width="100%", thickness=4, color=_TEAL, spaceAfter=4))
     story.append(
         Paragraph(
             f'<font color="{acc.hexval()}">[{label}]</font>  ·  '
@@ -1550,10 +1752,9 @@ def generate_comparison_report(
             st["badge"],
         )
     )
-    story.append(HRFlowable(width="100%", thickness=1.2, color=acc, spaceAfter=6))
 
-    # Four-model comparison table
     story.append(Paragraph("Four-Model Measurement Comparison", st["sec"]))
+    _section_rule(story)
 
     def _fmt(v, unit="", decimals=1):
         return f"{v:.{decimals}f}{unit}" if v else "—"
@@ -1593,7 +1794,13 @@ def generate_comparison_report(
         ["Compression vs baseline", "—", "−43.7%", "—", "−41.6%"],
         ["Analysis type", "Single frame", "Single frame", "16-frame", "16-frame"],
     ]
-    cw = [42 * mm, 28 * mm, 30 * mm, 28 * mm, 34 * mm]
+    cw = [
+        _CONTENT_W * 0.25,
+        _CONTENT_W * 0.18,
+        _CONTENT_W * 0.19,
+        _CONTENT_W * 0.18,
+        _CONTENT_W * 0.20,
+    ]
     t = Table(cmp_rows, colWidths=cw)
     ts = _tbl_style()
     ts.add("BACKGROUND", (2, 1), (2, -1), colors.HexColor("#ecfdf5"))
@@ -1602,49 +1809,40 @@ def generate_comparison_report(
     story.append(t)
     story.append(Spacer(1, 4 * mm))
 
-    # Clinical interpretation
     story.append(Paragraph("Clinical and Deployment Interpretation", st["sec"]))
+    _section_rule(story)
     if llm:
         p1, p2 = _llm_comparison_narrative(results, api_key)
     else:
         p1 = (
             "Single-frame static analysis is appropriate for standard second-trimester "
-            "screening with a clear suboccipitobregmatic plane and adequate acoustic access. "
-            "The temporal cine-loop analysis may provide incremental value in scenarios with "
-            "suboptimal probe contact, fetal movement, or when measurement audit is required. "
-            "Both approaches satisfy the ISUOG ±3 mm acceptable biometry threshold on the "
-            "HC18 independent validation cohort (199 images, Radboud UMC)."
+            "screening with adequate acoustic access. Temporal cine analysis may provide "
+            "incremental value with suboptimal probe contact or when measurement audit is "
+            "required. Both approaches satisfy the ISUOG ±3 mm threshold on the HC18 "
+            "validation cohort."
         )
         p2 = (
-            "The compressed model variants (Phase 4a and Phase 4b) achieve clinically "
-            "equivalent accuracy to their full-size counterparts following structural parameter "
-            "reduction of 43.7% and 41.6% respectively, while CPU inference remains under "
-            "400 ms for single-frame and under 7,000 ms for cine analysis. This supports "
-            "deployment without dedicated GPU infrastructure, enabling integration on portable "
-            "ultrasound platforms and in resource-constrained clinical settings."
+            "Compressed model variants achieve clinically equivalent accuracy following "
+            "structural parameter reduction of 43.7% and 41.6%. CPU inference under 400 ms "
+            "(single-frame) and 7 s (cine) supports deployment without GPU infrastructure "
+            "on portable platforms and in resource-constrained settings."
         )
 
-    story.append(
-        Paragraph("<b>Static vs temporal analysis — clinical recommendation</b>", st["label"])
-    )
+    story.append(Paragraph("<b>STATIC vs TEMPORAL — RECOMMENDATION</b>", st["label"]))
     story.append(Paragraph(_strip_markdown(p1), st["body"]))
     story.append(Spacer(1, 3 * mm))
-    story.append(
-        Paragraph("<b>Compressed model variants — deployment significance</b>", st["label"])
-    )
+    story.append(Paragraph("<b>COMPRESSED VARIANTS — DEPLOYMENT</b>", st["label"]))
     story.append(Paragraph(_strip_markdown(p2), st["green"]))
 
-    # Ablation context
     story.append(Spacer(1, 4 * mm))
     story.append(Paragraph("Temporal Model — Ablation Context", st["sec"]))
+    _section_rule(story)
     story.append(
         Paragraph(
-            "To contextualise the clinical value of the temporal attention mechanism, an ablation "
-            "study was conducted removing the temporal self-attention module, reducing the system "
-            "to frame-independent static inference. Without temporal attention, the same architecture "
-            "achieved 81.48% segmentation accuracy and 19.37 mm mean measurement deviation — "
-            "well outside ISUOG thresholds. The temporal integration component is clinically "
-            "essential, not merely an incremental enhancement.",
+            "Removing the temporal self-attention module reduces the system to frame-independent "
+            "static inference. Ablation results: 81.48% segmentation accuracy and 19.37 mm mean "
+            "deviation — well outside ISUOG thresholds. Temporal integration is clinically "
+            "essential.",
             st["bodyI"],
         )
     )
