@@ -54,6 +54,7 @@ APP_VERSION = "2.5.0"
 _DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "demo_subjects"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
 
+
 # HC18 CSV: filename → (pixel_spacing_mm, hc_reference_mm)
 # Loaded once at startup; absent file is handled gracefully.
 def _load_hc18_csv() -> dict[str, dict]:
@@ -63,6 +64,7 @@ def _load_hc18_csv() -> dict[str, dict]:
         return result
     try:
         import csv
+
         with open(csv_path, newline="") as f:
             for row in csv.DictReader(f):
                 fn = (row.get("filename") or "").strip()
@@ -76,6 +78,7 @@ def _load_hc18_csv() -> dict[str, dict]:
     except Exception:
         pass
     return result
+
 
 _HC18_META: dict[str, dict] = _load_hc18_csv()
 
