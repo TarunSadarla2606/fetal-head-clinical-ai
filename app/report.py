@@ -1961,6 +1961,107 @@ def generate_comparison_report(
     ts.add("BACKGROUND", (4, 1), (4, -1), colors.HexColor("#ecfdf5"))
     t.setStyle(ts)
     story.append(t)
+
+    # ── Performance Profile — Express vs Standard advantages ─────────────────
+    # All four metadata strings parse cleanly: "8.11M", "21.58 GMACs",
+    # "21.58 GMACs/frame". elapsed_ms comes from InferenceTimer which wraps
+    # ONLY the model forward pass — preprocessing and postprocessing are
+    # excluded so the speedup metric reflects purely architectural difference.
+    story.append(PageBreak())
+    story.append(Paragraph("Performance Profile — Compute &amp; Deployment", st["sec"]))
+    _section_rule(story)
+    story.append(
+        Paragraph(
+            "Inference times below measure the <b>model forward pass only</b>. "
+            "Image preprocessing (resize, tensor conversion, normalisation) and "
+            "postprocessing (sigmoid threshold, mask cleanup, HC/GA calculation) "
+            "are constant across all four variants and are excluded — so the "
+            "speedup metric reflects purely the architectural difference between "
+            "Standard and Express compressed variants.",
+            st["bodyI"],
+        )
+    )
+    story.append(Spacer(1, 2 * mm))
+
+    ms_p0 = r0.get("elapsed_ms") or 0
+    ms_p4a = r4a.get("elapsed_ms") or 0
+    ms_p2 = r2.get("elapsed_ms") or 0
+    ms_p4b = r4b.get("elapsed_ms") or 0
+
+    def _params_m(s: str) -> float:
+        return float(s.rstrip("M"))
+
+    def _ms(v):
+        return f"{v:.0f} ms" if v else "—"
+
+    def _thr(v):
+        return f"{1000.0 / v:.1f} img/s" if v else "—"
+
+    def _mb(params_m: float) -> str:
+        return f"{params_m * 4:.1f} MB"
+
+    def _speed(base_ms, var_ms):
+        if not (base_ms and var_ms):
+            return "—"
+        return f"{base_ms / var_ms:.2f}×"
+
+    def _cost(base_ms, var_ms):
+        if not (base_ms and var_ms):
+            return "—"
+        ratio = var_ms / base_ms
+        return f"{ratio:.2f}× baseline"
+
+    perf_rows = [
+        [
+            "Metric",
+            "Phase 0\nStandard",
+            "Phase 4a ✂\nExpress",
+            "Phase 2\nStandard",
+            "Phase 4b ✂\nExpress",
+        ],
+        ["Model-only inference¹", _ms(ms_p0), _ms(ms_p4a), _ms(ms_p2), _ms(ms_p4b)],
+        ["Speedup vs Standard", "1.00× (ref)", _speed(ms_p0, ms_p4a), "1.00× (ref)", _speed(ms_p2, ms_p4b)],
+        ["Throughput (CPU)", _thr(ms_p0), _thr(ms_p4a), _thr(ms_p2), _thr(ms_p4b)],
+        ["Parameters", m0["params"], m4a["params"], m2["params"], m4b["params"]],
+        [
+            "Model size (fp32)²",
+            _mb(_params_m(m0["params"])),
+            _mb(_params_m(m4a["params"])),
+            _mb(_params_m(m2["params"])),
+            _mb(_params_m(m4b["params"])),
+        ],
+        ["Compute per image", m0["flops"], m4a["flops"], m2["flops"], m4b["flops"]],
+        [
+            "CPU cost³",
+            "1.00× (ref)",
+            _cost(ms_p0, ms_p4a),
+            "1.00× (ref)",
+            _cost(ms_p2, ms_p4b),
+        ],
+    ]
+    pt = Table(perf_rows, colWidths=cw)
+    pts = _tbl_style()
+    # Highlight Express columns
+    pts.add("BACKGROUND", (2, 1), (2, -1), colors.HexColor("#ecfdf5"))
+    pts.add("BACKGROUND", (4, 1), (4, -1), colors.HexColor("#ecfdf5"))
+    # Bold the speedup row
+    pts.add("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold")
+    pt.setStyle(pts)
+    story.append(pt)
+    story.append(Spacer(1, 2 * mm))
+    story.append(
+        Paragraph(
+            "<i>1. Model forward pass only — see paragraph above. "
+            "2. fp32 weights = parameter count × 4 bytes. INT8 quantisation "
+            "would reduce this further by 4×. "
+            "3. CPU billed-time scales linearly with inference duration "
+            "(AWS Lambda, GCP Cloud Run, Azure Functions all bill per ms). "
+            "Cost ratio reflects production deployment savings of the Express "
+            "variant for equivalent throughput.</i>",
+            st["footnote"],
+        )
+    )
+
     story.append(Spacer(1, 4 * mm))
 
     story.append(Paragraph("Clinical and Deployment Interpretation", st["sec"]))
