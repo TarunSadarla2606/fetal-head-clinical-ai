@@ -48,3 +48,7 @@ results/videos/
 # OS
 .DS_Store
 Thumbs.db
+
+# SQLite test artifacts
+*.db
+reports.db
