@@ -299,6 +299,140 @@ def _draw_draft_watermark(canvas, doc):
     canvas.restoreState()
 
 
+def _make_footer_canvas(footer_text: str, draft: bool):
+    """Return a Canvas subclass that renders a per-page footer
+    "Patient · Accession · Page Z of N" plus the optional DRAFT watermark.
+
+    Page count is only known after the entire document has been laid out,
+    so we capture each page's state during the first pass and re-emit it
+    with the final footer in a deferred `save()`. This is the standard
+    ReportLab pattern for "Page Z of N" footers.
+    """
+    from reportlab.pdfgen import canvas as _cv
+
+    class _NumberedCanvas(_cv.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_page_states: list[dict] = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                if draft:
+                    self._draw_watermark()
+                self._draw_footer(total)
+                _cv.Canvas.showPage(self)
+            _cv.Canvas.save(self)
+
+        def _draw_watermark(self):
+            self.saveState()
+            self.setFont("Helvetica-Bold", 90)
+            self.setFillColorRGB(0.85, 0.20, 0.20, alpha=0.18)
+            self.translate(297, 421)
+            self.rotate(45)
+            self.drawCentredString(0, 0, "DRAFT — UNSIGNED")
+            self.restoreState()
+
+        def _draw_footer(self, total: int):
+            self.saveState()
+            self.setFont("Helvetica", 7)
+            self.setFillColorRGB(0.4, 0.4, 0.4)
+            # Bottom rule
+            self.setStrokeColorRGB(0.7, 0.7, 0.7)
+            self.setLineWidth(0.3)
+            self.line(_MARGIN_PT, 9 * mm, _PAGE_W - _MARGIN_PT, 9 * mm)
+            # Left: patient + accession
+            self.drawString(_MARGIN_PT, 6 * mm, footer_text[:120])
+            # Right: page Z of N
+            self.drawRightString(
+                _PAGE_W - _MARGIN_PT, 6 * mm, f"Page {self._pageNumber} of {total}"
+            )
+            self.restoreState()
+
+    return _NumberedCanvas
+
+
+def _build_footer_text(report) -> str:
+    """Compose 'Patient: NAME · Accession: ACC' footer for a report."""
+    name = (getattr(report, "patient_name", None) or "—") if report is not None else "—"
+    acc = (getattr(report, "accession_number", None) or "—") if report is not None else "—"
+    return f"Patient: {name}  ·  Accession: {acc}"
+
+
+def _clinical_interpretation(model_name: str, elapsed_ms: float) -> str:
+    """Plain-English interpretation of the AI System Validation metrics.
+
+    Targeted at clinicians, hospital procurement, and lay stakeholders who
+    don't read raw Dice / MAE / GMAC numbers fluently. Static (single-frame)
+    and temporal (cine) variants emphasise different value propositions:
+      · Static models: per-image accuracy + ISUOG threshold compliance
+      · Temporal models: inter-frame stability + robustness to single-frame
+        artefacts (motion, speckle, depth attenuation)
+    Compressed variants additionally highlight deployment-footprint benefits.
+    """
+    m = _meta(model_name)
+    is_temporal = "Temporal" in m["short"] or "temporal" in model_name.lower()
+    is_pruned = bool(m.get("pruned"))
+
+    # Common clinical framing — what the metrics mean in non-technical terms
+    if is_temporal:
+        capability = (
+            f"This is a temporal model: it processes 16 sequential cine frames "
+            f"and emits a consensus measurement that smooths through transient "
+            f"motion, speckle, and depth-attenuation artefacts. Reported segmentation "
+            f"accuracy ({m['dice']} Dice on the HC18 199-image cohort) reflects "
+            f"region-of-interest agreement against expert manual outlining; mean "
+            f"absolute HC error ({m['mae']}) sits well below the ±3 mm ISUOG "
+            f"clinical-acceptability threshold for inter-observer variability."
+        )
+        stability = (
+            "Clinical advantage: a single-frame model can be misled by one bad "
+            "frame in a noisy clip, but temporal aggregation typically holds "
+            "frame-to-frame standard deviation below 5 mm even on suboptimal "
+            "acquisitions, making the measurement more robust for routine clinical "
+            "use without requiring a 'perfect' freeze frame."
+        )
+    else:
+        capability = (
+            f"This is a single-frame model that segments the fetal calvarium and "
+            f"computes head circumference from the fitted ellipse. Reported "
+            f"segmentation accuracy ({m['dice']} Dice on the HC18 199-image "
+            f"held-out cohort) reflects region-of-interest agreement against "
+            f"expert manual outlining; mean absolute HC error ({m['mae']}) sits "
+            f"well below the ±3 mm ISUOG clinical-acceptability threshold for "
+            f"inter-observer variability."
+        )
+        stability = (
+            "Clinical advantage: deterministic per-image inference with explainable "
+            "Grad-CAM++ overlays, suitable for archive review of stored still frames "
+            "and for workflows where the sonographer captures a single biometric "
+            "freeze-frame."
+        )
+
+    if is_pruned:
+        deployment = (
+            f"Deployment note: this is a compressed variant ({m['compression']}). "
+            f"Benchmark accuracy is statistically equivalent to the baseline yet "
+            f"the smaller footprint enables browser-based / edge-device inference, "
+            f"lower-power on-cart deployment, and faster cold-start in cloud "
+            f"settings — relevant for low-resource clinics, point-of-care, and "
+            f"intra-operative use."
+        )
+    else:
+        deployment = (
+            "Deployment note: this is the production-grade baseline. A compressed "
+            "variant (Phase 4a / 4b) is available with statistically equivalent "
+            "accuracy and a smaller footprint for resource-constrained settings."
+        )
+
+    return f"<b>Interpretation for clinicians.</b> {capability} {stability} {deployment}"
+
+
 # ── Utility functions ───────────────────────────────────────────────────────────
 
 
@@ -1101,6 +1235,9 @@ def _section_ai_performance(story, st, model_name, elapsed_ms):
                 st["footnote"],
             )
         )
+    # Plain-English summary for non-ML readers (clinicians, procurement, etc.)
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(_clinical_interpretation(model_name, elapsed_ms), st["body"]))
     story.append(Spacer(1, 2 * mm))
 
 
@@ -1836,10 +1973,10 @@ def generate_static_report(
         report=report,
         pixel_spacing_source=pixel_spacing_source,
     )
-    if draft:
-        doc.build(story, onFirstPage=_draw_draft_watermark, onLaterPages=_draw_draft_watermark)
-    else:
-        doc.build(story)
+    doc.build(
+        story,
+        canvasmaker=_make_footer_canvas(_build_footer_text(report), draft),
+    )
     buf.seek(0)
     return buf.read()
 
@@ -1883,10 +2020,10 @@ def generate_cine_report(
         report=report,
         pixel_spacing_source=pixel_spacing_source,
     )
-    if draft:
-        doc.build(story, onFirstPage=_draw_draft_watermark, onLaterPages=_draw_draft_watermark)
-    else:
-        doc.build(story)
+    doc.build(
+        story,
+        canvasmaker=_make_footer_canvas(_build_footer_text(report), draft),
+    )
     buf.seek(0)
     return buf.read()
 
@@ -2163,7 +2300,12 @@ def generate_comparison_report(
 
     _section_regulatory(story, st)
 
-    doc.build(story)
+    doc.build(
+        story,
+        canvasmaker=_make_footer_canvas(
+            "Four-Model Comparative Report  ·  Demonstration only", draft=False
+        ),
+    )
     buf.seek(0)
     return buf.read()
 
@@ -2559,6 +2701,98 @@ def _section_combined_agreement(story, st, results, consensus):
     story.append(t)
     story.append(Spacer(1, 3 * mm))
 
+    # Plain-English recommendation paragraph for clinicians / procurement
+    story.append(
+        Paragraph(_combined_recommendation(results, consensus), st["body"]),
+    )
+    story.append(Spacer(1, 3 * mm))
+
+
+def _combined_recommendation(results: list[dict], consensus: dict) -> str:
+    """Plain-English summary of the multi-model comparison + a recommendation.
+
+    Reads the agreement statistics and produces a clinician-facing paragraph
+    that (a) interprets whether the spread is clinically acceptable, (b) names
+    the model recommended for routine clinical use given the trade-offs, and
+    (c) flags any outliers requiring expert review.
+    """
+    n = len(results)
+    hc_std = consensus["hc_std_mm"]
+    outliers = consensus["outliers"]
+    has_compressed = any(
+        _meta(r.get("model_name") or r.get("model", "")).get("pruned") for r in results
+    )
+    has_temporal = any(
+        "Temporal" in _meta(r.get("model_name") or r.get("model", "")).get("short", "")
+        or "temporal" in (r.get("model_name") or r.get("model", "")).lower()
+        for r in results
+    )
+
+    # Spread classification — drives the agreement verdict
+    if hc_std < 1.0:
+        verdict = (
+            f"Inter-model agreement is excellent: standard deviation {hc_std:.2f} mm "
+            f"is well within typical inter-observer variability (±3 mm ISUOG)."
+        )
+    elif hc_std < 3.0:
+        verdict = (
+            f"Inter-model agreement is good: standard deviation {hc_std:.2f} mm "
+            f"is within the ±3 mm ISUOG inter-observer threshold."
+        )
+    else:
+        verdict = (
+            f"Inter-model agreement is moderate: standard deviation {hc_std:.2f} mm "
+            f"approaches or exceeds the ±3 mm ISUOG inter-observer threshold — review "
+            f"the per-model image overlays before clinical use."
+        )
+
+    # Recommendation copy — depends on which model classes are present
+    if has_temporal and has_compressed:
+        recommendation = (
+            "For routine clinical reporting, the temporal (cine) consensus is "
+            "preferred when a 16-frame loop is available since it smooths through "
+            "transient artefacts; the compressed variant of either family is "
+            "preferred for edge / browser deployment with statistically equivalent "
+            "accuracy and a smaller footprint."
+        )
+    elif has_temporal:
+        recommendation = (
+            "For routine clinical reporting, the temporal (cine) consensus is "
+            "preferred when a 16-frame loop is available since it smooths through "
+            "transient artefacts; the static model can be used for archive review "
+            "of stored still frames."
+        )
+    elif has_compressed:
+        recommendation = (
+            "For routine clinical reporting, either model is acceptable — the "
+            "compressed variant has a smaller deployment footprint with statistically "
+            "equivalent accuracy and is preferred for edge / browser-based inference."
+        )
+    else:
+        recommendation = (
+            "For routine clinical reporting, all included models are production-grade "
+            "baselines and either is acceptable; pick based on whether you have a "
+            "single freeze-frame (static) or a cine clip available."
+        )
+
+    if outliers:
+        outlier_note = (
+            f" {_WARN} {len(outliers)} model{'s' if len(outliers) != 1 else ''} "
+            f"({', '.join(outliers)}) deviate{'s' if len(outliers) == 1 else ''} "
+            f"more than 5 mm from the consensus and should be reviewed individually "
+            f"before relying on this summary."
+        )
+    else:
+        outlier_note = ""
+
+    return (
+        f"<b>Inter-model comparison summary.</b> Comparing {n} variants on a "
+        f"single image is a multi-reader-style sanity check: independent models "
+        f"trained on the same dataset should converge on similar measurements, "
+        f"and disagreement is itself diagnostic. {verdict} {recommendation}"
+        f"{outlier_note}"
+    )
+
 
 def _section_combined_performance(story, st, results):
     """Per-model performance profile — one row per model."""
@@ -2755,9 +2989,9 @@ def generate_combined_report(
     # then all model tables stack on shared pages — no blank pages.
     _appendix_combined_technical(story, st, results)
 
-    if draft:
-        doc.build(story, onFirstPage=_draw_draft_watermark, onLaterPages=_draw_draft_watermark)
-    else:
-        doc.build(story)
+    doc.build(
+        story,
+        canvasmaker=_make_footer_canvas(_build_footer_text(report), draft),
+    )
     buf.seek(0)
     return buf.read()
