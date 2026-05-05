@@ -54,7 +54,10 @@ _IMPRESSION_BG = colors.HexColor("#F0F7FA")
 _BORDER = colors.HexColor("#cccccc")
 _HEADER_RULE = colors.HexColor("#CCCCCC")
 _PAGE_W = A4[0]
-_CONTENT_W = _PAGE_W - 40 * mm  # 20 mm margins each side
+# 50pt margins each side → 495pt usable content width.
+# All table column widths are computed in points and sum to _CONTENT_W.
+_MARGIN_PT = 50
+_CONTENT_W = _PAGE_W - 2 * _MARGIN_PT  # 495pt
 
 # Status text fragments — use ⚠ (U+26A0), never ■ (causes glyph fallback issues)
 _WARN = "⚠"
@@ -501,17 +504,15 @@ def _section_patient_exam(story, st, report):
     for (l_label, l_val), (r_label, r_val) in zip(left, right):
         rows.append(
             [
-                l_label,
+                Paragraph(l_label, st["label"]),
                 _field_value(st, l_val),
-                r_label,
+                Paragraph(r_label, st["label"]),
                 _field_value(st, r_val),
             ]
         )
 
-    # 35% / 65% per side; total 4 cols at (label/value/label/value)
-    inner_label = 0.35 * (_CONTENT_W / 2)
-    inner_value = 0.65 * (_CONTENT_W / 2)
-    col_w = [inner_label, inner_value, inner_label, inner_value]
+    # Explicit pt widths (sum=495). Auto rowHeights via Paragraph wrapping.
+    col_w = [100, 145, 100, 150]
 
     t = Table(rows, colWidths=col_w)
     t.setStyle(
@@ -589,17 +590,38 @@ def _section_technical_params(story, st, report):
     presentation_key = getattr(report, "fetal_presentation", None) or "not_assessed"
     presentation_label = _PRESENTATION_LABELS.get(presentation_key, "Not assessed")
 
+    cell = st["body"]
     rows = [
-        ["Parameter", "Value", "Notes"],
-        ["Ultrasound approach", us_approach, ""],
-        ["Scanning plane", "Suboccipitobregmatic", "Standard fetal head biometry plane"],
-        ["Pixel spacing", f"{ps_mm:.4f} mm/pixel", ps_source],
-        ["Image quality", image_quality, "Sonographer assessment"],
-        ["Fetal lie / presentation", presentation_label, "AIUM/ISUOG standard component"],
-        ["Measurement standard", "ISUOG Practice Guidelines 2010", "HC measurement methodology"],
+        [Paragraph("Parameter", cell), Paragraph("Value", cell), Paragraph("Notes", cell)],
+        [Paragraph("Ultrasound approach", cell), Paragraph(us_approach, cell), Paragraph("", cell)],
+        [
+            Paragraph("Scanning plane", cell),
+            Paragraph("Suboccipitobregmatic", cell),
+            Paragraph("Standard fetal head biometry plane", cell),
+        ],
+        [
+            Paragraph("Pixel spacing", cell),
+            Paragraph(f"{ps_mm:.4f} mm/pixel", cell),
+            Paragraph(ps_source, cell),
+        ],
+        [
+            Paragraph("Image quality", cell),
+            Paragraph(image_quality, cell),
+            Paragraph("Sonographer assessment", cell),
+        ],
+        [
+            Paragraph("Fetal lie / presentation", cell),
+            Paragraph(presentation_label, cell),
+            Paragraph("AIUM/ISUOG standard component", cell),
+        ],
+        [
+            Paragraph("Measurement standard", cell),
+            Paragraph("ISUOG Practice Guidelines 2010", cell),
+            Paragraph("HC measurement methodology", cell),
+        ],
     ]
-    # 30 / 20 / 50 column ratios
-    col_w = [_CONTENT_W * 0.30, _CONTENT_W * 0.20, _CONTENT_W * 0.50]
+    # Explicit pt widths (sum=495).
+    col_w = [150, 120, 225]
     t = Table(rows, colWidths=col_w)
     ts = _tbl_style()
     if not dicom_flag:
@@ -674,35 +696,41 @@ def _section_biometric_findings(story, st, report):
     bpd_ga_weeks = _bpd_to_ga_weeks(bpd_mm) if bpd_mm else None
     bpd_ga_str = _ga_str_from_weeks(bpd_ga_weeks) if bpd_ga_weeks else None
 
+    cell = st["body"]
+
+    def P(t):
+        return Paragraph(t, cell)
+
     rows = [
-        ["Parameter", "AI Measurement", "Reference / Notes"],
-        ["Head Circumference (HC)", f"{hc:.1f} mm" if hc else "—", "Calvarium perimeter"],
+        [P("Parameter"), P("AI Measurement"), P("Reference / Notes")],
+        [P("Head Circumference (HC)"), P(f"{hc:.1f} mm" if hc else "—"), P("Calvarium perimeter")],
         [
-            "Estimated Gestational Age (HC)",
-            ga_str,
-            f"Hadlock 1984 nomogram  {ci_str}",
+            P("Estimated Gestational Age (HC)"),
+            P(ga_str),
+            # ci_str already cites Hadlock 1984 — do not double-cite.
+            P(ci_str),
         ],
-        ["Trimester", trim, "Derived from estimated GA"],
-        ["Measurement Confidence", conf, "Coverage + pixel-spacing verification"],
+        [P("Trimester"), P(trim), P("Derived from estimated GA")],
+        [P("Measurement Confidence"), P(conf), P("Coverage + pixel-spacing verification")],
     ]
     # BPD row — optional; greyed out if not entered
     if bpd_mm:
         rows.insert(
             2,
             [
-                "Biparietal Diameter (BPD)",
-                f"{bpd_mm:.1f} mm",
-                f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range",
+                P("Biparietal Diameter (BPD)"),
+                P(f"{bpd_mm:.1f} mm"),
+                P(f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range"),
             ],
         )
     else:
         rows.insert(
             2,
-            ["BPD", "Not measured", "Single-parameter study (HC only)"],
+            [P("BPD"), P("Not measured"), P("Single-parameter study (HC only)")],
         )
 
-    # 40 / 30 / 30 column ratios
-    col_w = [_CONTENT_W * 0.40, _CONTENT_W * 0.30, _CONTENT_W * 0.30]
+    # Explicit pt widths (sum=495).
+    col_w = [175, 120, 200]
     t = Table(rows, colWidths=col_w)
     ts = _tbl_style()
     if not bpd_mm:
@@ -724,26 +752,35 @@ def _section_biometric_findings(story, st, report):
         hc_ga_display = _format_weeks_days(round(ga_weeks * 7)) if ga_weeks else "—"
         disc_str = _format_weeks_days(disc_days) if disc_days is not None else "—"
 
-        if disc_flag:
-            disc_value = f"{disc_str} {_WARN} (>2 weeks — clinical review recommended)"
-        else:
-            disc_value = disc_str
+        disc_notes = (
+            f"{_WARN} >2 weeks — clinical review recommended"
+            if disc_flag
+            else "Within 14-day threshold"
+        )
 
-        side_by_side = f"LMP GA: {lmp_ga_str}  |  HC GA: {hc_ga_display}  |  EDD: {edd or '—'}"
+        cell = st["body"]
+
+        def P2(text):
+            return Paragraph(text, cell)
 
         lmp_rows = [
-            ["GA Comparison", "Value", "Notes"],
-            ["GA from HC (Hadlock 1984)", hc_ga_display, "This measurement"],
-            ["LMP-derived GA", lmp_ga_str, f"LMP date: {lmp_val}"],
-            ["EDD (Naegele's rule)", edd or "—", "From LMP + 280 days"],
+            [P2("GA Comparison"), P2("Value"), P2("Notes")],
+            [P2("GA from HC"), P2(hc_ga_display), P2("This measurement (Hadlock 1984)")],
+            [P2("LMP-derived GA"), P2(lmp_ga_str), P2(f"LMP date: {lmp_val}")],
+            [P2("EDD (Naegele's rule)"), P2(edd or "—"), P2("From LMP + 280 days")],
+            # Discordance split into two rows: numeric value + clinical interpretation.
+            [P2("Discordance (HC vs LMP)"), P2(disc_str), P2(disc_notes)],
             [
-                "Discordance",
-                disc_value,
-                side_by_side,
+                P2("Summary"),
+                P2(""),
+                P2(f"LMP GA: {lmp_ga_str}  |  HC GA: {hc_ga_display}  |  EDD: {edd or '—'}"),
             ],
         ]
-        # 30 / 25 / 45 column ratios
-        lcol_w = [_CONTENT_W * 0.30, _CONTENT_W * 0.25, _CONTENT_W * 0.45]
+        prior = getattr(report, "prior_biometry", None)
+        if prior:
+            lmp_rows.append([P2("Prior biometry"), P2(""), P2(prior)])
+        # Explicit pt widths (sum=495).
+        lcol_w = [150, 120, 225]
         lt = Table(lmp_rows, colWidths=lcol_w)
         header_color = _RED if disc_flag else _TEAL
         lt.setStyle(_tbl_style(header_color=header_color))
@@ -886,15 +923,15 @@ def _section_impression(story, st, narrative_impression, report):
             [
                 ("BACKGROUND", (0, 0), (-1, -1), _IMPRESSION_BG),
                 ("BOX", (0, 0), (-1, -1), 1, _TEAL),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
                 ("TOPPADDING", (0, 0), (-1, -1), 8),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
             ]
         )
     )
     story.append(imp_tbl)
-    story.append(Spacer(1, 3 * mm))
+    story.append(Spacer(1, 8))
 
 
 # ── Section 7 — Clinical Interpretation ───────────────────────────────────────
@@ -965,17 +1002,34 @@ def _section_ai_performance(story, st, model_name, elapsed_ms):
     m = _meta(model_name)
     story.append(Paragraph("AI System Validation Summary", st["sec"]))
     _section_rule(story)
+    cell = st["body"]
+
+    def P3(text):
+        return Paragraph(text, cell)
+
+    # m["dataset"] already begins with "HC18 — …", so just render it directly
+    # rather than prefixing another "HC18 — " (was producing "HC18 — HC18 —").
     rows = [
-        ["Metric", "Result", "Clinical Reference"],
-        ["Segmentation accuracy (validation cohort)", m["dice"], f"HC18 — {m['dataset']}"],
-        ["Mean measurement deviation", m["mae"], "ISUOG acceptable threshold: ±3 mm"],
-        ["ISUOG clinical threshold (±3 mm)", f"✓ {m['isuog']}", "ISUOG Practice Guidelines 2010"],
-        ["Validation cohort", "199 images (held-out test set)", "HC18 — Radboud UMC, Netherlands"],
+        [P3("Metric"), P3("Result"), P3("Clinical Reference")],
+        [P3("Segmentation accuracy (validation cohort)"), P3(m["dice"]), P3(m["dataset"])],
+        [P3("Mean measurement deviation"), P3(m["mae"]), P3("ISUOG acceptable threshold: ±3 mm")],
+        [
+            P3("ISUOG clinical threshold (±3 mm)"),
+            P3(f"✓ {m['isuog']}"),
+            P3("ISUOG Practice Guidelines 2010"),
+        ],
+        [
+            P3("Validation cohort"),
+            P3("199 images (held-out test set)"),
+            P3("HC18 — Radboud UMC, Netherlands"),
+        ],
     ]
     if elapsed_ms:
-        rows.append(["Inference runtime (this image)", f"{elapsed_ms:.0f} ms", "CPU inference"])
+        rows.append(
+            [P3("Inference runtime (this image)"), P3(f"{elapsed_ms:.0f} ms"), P3("CPU inference")]
+        )
 
-    col_w = [_CONTENT_W * 0.40, _CONTENT_W * 0.25, _CONTENT_W * 0.35]
+    col_w = [180, 120, 195]
     t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
@@ -991,18 +1045,25 @@ def _section_signoff(story, st, signed_meta: dict):
     story.append(Paragraph("Clinical Sign-off", st["sec"]))
     _section_rule(story)
     rows = [
-        ["Signed by", Paragraph(signed_meta.get("signed_by") or "—", st["body"])],
-        ["Signed at", Paragraph(signed_meta.get("signed_at") or "—", st["body"])],
+        [
+            Paragraph("Signed by", st["label"]),
+            Paragraph(signed_meta.get("signed_by") or "—", st["body"]),
+        ],
+        [
+            Paragraph("Signed at", st["label"]),
+            Paragraph(signed_meta.get("signed_at") or "—", st["body"]),
+        ],
     ]
     note = signed_meta.get("signoff_note")
     if note:
         rows.append(
             [
-                "Verification note (clinical)",
+                Paragraph("Verification note (clinical)", st["label"]),
                 Paragraph(note, st["signoff_note"]),
             ]
         )
-    t = Table(rows, colWidths=[55 * mm, _CONTENT_W - 55 * mm])
+    # Explicit pt widths (sum=495). Generous value column avoids name truncation.
+    t = Table(rows, colWidths=[160, 335])
     t.setStyle(
         TableStyle(
             [
@@ -1067,17 +1128,22 @@ def _appendix_technical(story, st, model_name, elapsed_ms):
             st["bodyI"],
         )
     )
+    cell = st["body"]
+
+    def Pa(text):
+        return Paragraph(text, cell)
+
     rows = [
-        ["Specification", "Value"],
-        ["Model architecture", m["short"]],
-        ["Parameter count", m["params"]],
-        ["Computational operations (GMACs)", m["flops"]],
-        ["Compression vs baseline", m["compression"] or "N/A (baseline)"],
-        ["Training dataset", "HC18 (1334 images, Radboud UMC)"],
-        ["Validation dataset", m["dataset"]],
-        ["Runtime on CPU", f"{elapsed_ms:.0f} ms" if elapsed_ms else "—"],
+        [Pa("Specification"), Pa("Value")],
+        [Pa("Model architecture"), Pa(m["short"])],
+        [Pa("Parameter count"), Pa(m["params"])],
+        [Pa("Computational operations (GMACs)"), Pa(m["flops"])],
+        [Pa("Compression vs baseline"), Pa(m["compression"] or "N/A (baseline)")],
+        [Pa("Training dataset"), Pa("HC18 (1334 images, Radboud UMC)")],
+        [Pa("Validation dataset"), Pa(m["dataset"])],
+        [Pa("Runtime on CPU"), Pa(f"{elapsed_ms:.0f} ms" if elapsed_ms else "—")],
     ]
-    col_w = [_CONTENT_W * 0.45, _CONTENT_W * 0.55]
+    col_w = [220, 275]
     t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
@@ -1544,6 +1610,7 @@ class _BiometricProxy:
         self.pixel_spacing_dicom_derived = getattr(report, "pixel_spacing_dicom_derived", False)
         self.bpd_mm = getattr(report, "bpd_mm", None)
         self.fetal_presentation = getattr(report, "fetal_presentation", None)
+        self.prior_biometry = getattr(report, "prior_biometry", None)
 
     patient_name = "—"
     patient_id = None
@@ -1581,14 +1648,23 @@ def _section_temporal_table(story, st, rel, std, n_frames):
     )
     story.append(Paragraph("Temporal Acquisition Analysis", st["sec"]))
     _section_rule(story)
+    cell = st["body"]
+
+    def Pt(text):
+        return Paragraph(text, cell)
+
     rows = [
-        ["Parameter", "Value", "Clinical Interpretation"],
-        ["Frames analysed", str(n_frames), "Sequential cine acquisition"],
-        ["Inter-frame concordance", rel_label, "Consistency across frames"],
-        ["Frame-to-frame HC variability", f"{std:.2f} mm", std_label],
-        ["Consensus method", "Temporal mean probability", "Mean prediction across frames"],
+        [Pt("Parameter"), Pt("Value"), Pt("Clinical Interpretation")],
+        [Pt("Frames analysed"), Pt(str(n_frames)), Pt("Sequential cine acquisition")],
+        [Pt("Inter-frame concordance"), Pt(rel_label), Pt("Consistency across frames")],
+        [Pt("Frame-to-frame HC variability"), Pt(f"{std:.2f} mm"), Pt(std_label)],
+        [
+            Pt("Consensus method"),
+            Pt("Temporal mean probability"),
+            Pt("Mean prediction across frames"),
+        ],
     ]
-    col_w = [_CONTENT_W * 0.30, _CONTENT_W * 0.25, _CONTENT_W * 0.45]
+    col_w = [150, 120, 225]
     t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
@@ -1618,8 +1694,8 @@ def generate_static_report(
         pagesize=A4,
         topMargin=14 * mm,
         bottomMargin=14 * mm,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
+        leftMargin=_MARGIN_PT,
+        rightMargin=_MARGIN_PT,
     )
     story = _build_story(
         result,
@@ -1660,8 +1736,8 @@ def generate_cine_report(
         pagesize=A4,
         topMargin=14 * mm,
         bottomMargin=14 * mm,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
+        leftMargin=_MARGIN_PT,
+        rightMargin=_MARGIN_PT,
     )
     story = _build_story(
         result,
@@ -1697,8 +1773,8 @@ def generate_comparison_report(
         pagesize=A4,
         topMargin=14 * mm,
         bottomMargin=14 * mm,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
+        leftMargin=_MARGIN_PT,
+        rightMargin=_MARGIN_PT,
     )
     llm = use_llm and bool(api_key)
     st = _styles(llm)

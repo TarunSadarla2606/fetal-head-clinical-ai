@@ -96,6 +96,9 @@ class CreateReportRequest(BaseModel):
         "not_assessed"
     )
     bpd_mm: float | None = None  # optional secondary biometric parameter
+    prior_biometry: str | None = (
+        None  # free-text prior measurement summary, e.g. "HC 198 mm @ 2024-12-01"
+    )
 
 
 class SignReportRequest(BaseModel):
@@ -146,6 +149,7 @@ class ReportResponse(BaseModel):
     gradcam_image_b64: str | None = None
     fetal_presentation: str | None = None
     bpd_mm: float | None = None
+    prior_biometry: str | None = None
 
 
 class AuditEntryResponse(BaseModel):

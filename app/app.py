@@ -267,6 +267,19 @@ with st.sidebar:
              "Typical fetal US: 0.05–0.15 mm/px. "
              "Incorrect spacing directly affects HC and GA accuracy.",
     )
+    pixel_spacing_confirmed = st.checkbox(
+        "I confirm the pixel spacing matches the DICOM tag (0028,0030)",
+        value=False,
+        help=(
+            "HC and GA both depend on pixel spacing being correct. "
+            "Check the source DICOM before generating a clinical report."
+        ),
+        key="pixel_spacing_confirmed",
+    )
+    if not pixel_spacing_confirmed:
+        st.caption(
+            "⚠️ Confirm pixel spacing above before generating a clinical report."
+        )
 
     use_llm = st.checkbox(
         "Enable LLM clinical summary",
@@ -450,18 +463,23 @@ with tab_static:
             render_gt_section(result_s, pixel_spacing, key_prefix="static")
             st.markdown("---")
 
-            with st.spinner("Generating clinical report..."):
-                pdf = generate_static_report(
-                    result_s, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
-                    model_name=active_static_name, pixel_spacing=pixel_spacing,
+            if not pixel_spacing_confirmed:
+                st.warning(
+                    "Confirm pixel spacing in the sidebar before generating a clinical report."
                 )
-            st.download_button(
-                "⬇️ Download Clinical Report (PDF)", pdf,
-                "fetal_hc_static_report.pdf", "application/pdf",
-                use_container_width=True,
-            )
-            report_mode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
-            st.caption(f"Report type: {report_mode}")
+            else:
+                with st.spinner("Generating clinical report..."):
+                    pdf = generate_static_report(
+                        result_s, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
+                        model_name=active_static_name, pixel_spacing=pixel_spacing,
+                    )
+                st.download_button(
+                    "⬇️ Download Clinical Report (PDF)", pdf,
+                    "fetal_hc_static_report.pdf", "application/pdf",
+                    use_container_width=True,
+                )
+                report_mode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
+                st.caption(f"Report type: {report_mode}")
         else:
             st.warning("Could not estimate HC. Check pixel spacing and image quality.")
 
@@ -620,18 +638,23 @@ with tab_cine:
             render_gt_section(result_c, pixel_spacing, key_prefix="cine")
             st.markdown("---")
 
-            with st.spinner("Generating clinical report..."):
-                pdf_c = generate_cine_report(
-                    result_c, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
-                    model_name=active_cine_name, pixel_spacing=pixel_spacing,
+            if not pixel_spacing_confirmed:
+                st.warning(
+                    "Confirm pixel spacing in the sidebar before generating a clinical report."
                 )
-            st.download_button(
-                "⬇️ Download Clinical Report (PDF)", pdf_c,
-                "fetal_hc_cine_report.pdf", "application/pdf",
-                use_container_width=True,
-            )
-            report_mode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
-            st.caption(f"Report type: {report_mode}")
+            else:
+                with st.spinner("Generating clinical report..."):
+                    pdf_c = generate_cine_report(
+                        result_c, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
+                        model_name=active_cine_name, pixel_spacing=pixel_spacing,
+                    )
+                st.download_button(
+                    "⬇️ Download Clinical Report (PDF)", pdf_c,
+                    "fetal_hc_cine_report.pdf", "application/pdf",
+                    use_container_width=True,
+                )
+                report_mode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
+                st.caption(f"Report type: {report_mode}")
         else:
             st.warning("Could not estimate HC from consensus. Check pixel spacing.")
 

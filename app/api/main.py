@@ -207,8 +207,17 @@ def infer(
         threshold=threshold,
         findings={
             "hc_mm": result["hc_mm"],
+            "ga_str": result["ga_str"],
+            "ga_weeks": result["ga_weeks"],
+            "trimester": result["trimester"],
+            "reliability": result["reliability"],
+            "hc_std_mm": result["hc_std_mm"],
+            "confidence_label": result["confidence_label"],
+            "elapsed_ms": result["elapsed_ms"],
             "mode": result["mode"],
             "validation": val_result,
+            "mask_b64": mask_b64,
+            "overlay_b64": overlay_b64,
         },
     )
 
