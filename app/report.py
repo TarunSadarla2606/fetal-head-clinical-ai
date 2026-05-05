@@ -22,7 +22,6 @@ Two narrative modes:
 import io
 import re
 from datetime import datetime, timedelta
-from typing import Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -330,7 +329,7 @@ def _ga_ci_string(ga_weeks: float) -> str:
         return "±14–21 days (Hadlock 1984, third-trimester — early dating preferred)"
 
 
-def _calculate_edd(lmp: str) -> Optional[str]:
+def _calculate_edd(lmp: str) -> str | None:
     """Naegele's rule: EDD = LMP + 280 days."""
     try:
         lmp_dt = datetime.strptime(lmp, "%Y-%m-%d")
@@ -340,7 +339,7 @@ def _calculate_edd(lmp: str) -> Optional[str]:
         return None
 
 
-def _ga_discordance_days(lmp: str, ga_weeks: float) -> Optional[int]:
+def _ga_discordance_days(lmp: str, ga_weeks: float) -> int | None:
     """Days difference between LMP-derived GA and HC-derived GA."""
     try:
         lmp_dt = datetime.strptime(lmp, "%Y-%m-%d")
@@ -352,7 +351,7 @@ def _ga_discordance_days(lmp: str, ga_weeks: float) -> Optional[int]:
         return None
 
 
-def _lmp_ga_days(lmp: str) -> Optional[int]:
+def _lmp_ga_days(lmp: str) -> int | None:
     try:
         lmp_dt = datetime.strptime(lmp, "%Y-%m-%d")
         return (datetime.utcnow() - lmp_dt).days
@@ -360,7 +359,7 @@ def _lmp_ga_days(lmp: str) -> Optional[int]:
         return None
 
 
-def _format_weeks_days(days: Optional[int]) -> str:
+def _format_weeks_days(days: int | None) -> str:
     """Format day count as 'Xw Yd'. Returns '—' for None."""
     if days is None:
         return "—"
@@ -369,7 +368,7 @@ def _format_weeks_days(days: Optional[int]) -> str:
     return f"{weeks}w {rem}d"
 
 
-def _bpd_to_ga_weeks(bpd_mm: float) -> Optional[float]:
+def _bpd_to_ga_weeks(bpd_mm: float) -> float | None:
     """Hadlock 1984 BPD-only nomogram (BPD in cm).
 
     GA(weeks) = 9.54 + 1.482·BPD + 0.1676·BPD²
@@ -392,7 +391,7 @@ def _ga_str_from_weeks(ga_weeks: float) -> str:
     return f"{total_days // 7}w {total_days % 7}d"
 
 
-def _b64_to_image_flowable(b64_str: str, max_width: float, max_height: float) -> Optional[Image]:
+def _b64_to_image_flowable(b64_str: str, max_width: float, max_height: float) -> Image | None:
     """Decode base64 PNG/JPG string → reportlab Image flowable, fit to box."""
     try:
         import base64
@@ -410,7 +409,7 @@ def _b64_to_image_flowable(b64_str: str, max_width: float, max_height: float) ->
         return None
 
 
-def _field_value(st, value: Optional[str]) -> Paragraph:
+def _field_value(st, value: str | None) -> Paragraph:
     """Render a field value: bold black if present, italic grey 'Not provided' if blank."""
     if value is None or str(value).strip() == "" or value == "—":
         return Paragraph("Not provided", st["not_provided"])
@@ -641,7 +640,7 @@ def _section_technical_params(story, st, report):
 # ── Section 5 — Biometric Findings ────────────────────────────────────────────
 
 
-def _confidence_label_effective(report, base_label: Optional[str]) -> str:
+def _confidence_label_effective(report, base_label: str | None) -> str:
     """Downgrade HIGH CONFIDENCE → MODERATE when pixel spacing is unverified.
 
     HIGH CONFIDENCE requires both adequate segmentation coverage AND
@@ -1189,7 +1188,7 @@ _CLINICAL_SYSTEM_PROMPT = (
 )
 
 
-def _call_llm(api_key: str, prompt: str, max_tokens: int = 250) -> Optional[str]:
+def _call_llm(api_key: str, prompt: str, max_tokens: int = 250) -> str | None:
     try:
         import anthropic
 
@@ -1459,7 +1458,7 @@ def _rule_impression(hc, ga_str, ga_weeks, trim):
     )
 
 
-def _discordance_recommendation(lmp: Optional[str], ga_weeks: float) -> Optional[str]:
+def _discordance_recommendation(lmp: str | None, ga_weeks: float) -> str | None:
     """Return a discordance recommendation sentence if LMP-GA disagreement exceeds 14 days."""
     if not lmp or not ga_weeks:
         return None
@@ -1478,13 +1477,13 @@ def _discordance_recommendation(lmp: Optional[str], ga_weeks: float) -> Optional
 
 def _build_story(
     result: dict,
-    api_key: Optional[str],
+    api_key: str | None,
     use_llm: bool,
     model_name: str,
     pixel_spacing: float,
-    narrative: Optional[tuple],
+    narrative: tuple | None,
     draft: bool,
-    signed_meta: Optional[dict],
+    signed_meta: dict | None,
     report_type_label: str,
     is_temporal: bool,
     report=None,
@@ -1706,13 +1705,13 @@ def _section_temporal_table(story, st, rel, std, n_frames):
 
 def generate_static_report(
     result: dict,
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     use_llm: bool = True,
     model_name: str = "Phase 0 — Static baseline",
     pixel_spacing: float = 0.070,
-    narrative: Optional[tuple] = None,
+    narrative: tuple | None = None,
     draft: bool = False,
-    signed_meta: Optional[dict] = None,
+    signed_meta: dict | None = None,
     report=None,
 ) -> bytes:
     """PDF report for static single-frame analysis (Phase 0 / Phase 4a)."""
@@ -1748,13 +1747,13 @@ def generate_static_report(
 
 def generate_cine_report(
     result: dict,
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     use_llm: bool = True,
     model_name: str = "Phase 2 — Temporal baseline",
     pixel_spacing: float = 0.070,
-    narrative: Optional[tuple] = None,
+    narrative: tuple | None = None,
     draft: bool = False,
-    signed_meta: Optional[dict] = None,
+    signed_meta: dict | None = None,
     report=None,
 ) -> bytes:
     """PDF report for temporal cine-loop analysis (Phase 2 / Phase 4b)."""
@@ -1790,7 +1789,7 @@ def generate_cine_report(
 
 def generate_comparison_report(
     results: dict,
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     use_llm: bool = True,
     pixel_spacing: float = 0.070,
 ) -> bytes:
@@ -1960,7 +1959,7 @@ def generate_comparison_report(
 
 def generate_pdf_report(
     result: dict,
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     use_llm: bool = True,
     model_name: str = None,
     pixel_spacing: float = 0.070,

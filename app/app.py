@@ -20,37 +20,47 @@ Key production features over the original deployment:
   - Structured clinical report card inline (not PDF-only)
 """
 
-import os
 import io
-import time
-import random
+import os
 import platform
-import numpy as np
+import time
+
 import cv2
-import torch
 import matplotlib
+import numpy as np
+import torch
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import streamlit as st
-from PIL import Image
-import imageio
 from pathlib import Path
 
+import imageio
+import matplotlib.pyplot as plt
+import streamlit as st
 from inference import (
-    # loaders
-    load_phase0, load_phase4a, load_phase2, load_phase4b,
-    get_model_info,
-    # prediction
-    predict_single_frame, predict_cine_clip,
-    # utilities
-    validate_input, make_comparison_overlay, compute_gt_metrics,
-    confidence_label,
     # constants
-    DEVICE, INPUT_H, INPUT_W, N_FRAMES, IMG_MEAN, IMG_STD,
+    DEVICE,
+    INPUT_H,
+    INPUT_W,
+    N_FRAMES,
+    compute_gt_metrics,
+    confidence_label,
+    get_model_info,
+    # loaders
+    load_phase0,
+    load_phase2,
+    load_phase4a,
+    load_phase4b,
+    make_comparison_overlay,
+    predict_cine_clip,
+    # prediction
+    predict_single_frame,
+    # utilities
+    validate_input,
 )
-from xai import build_xai_panel
-from report import generate_static_report, generate_cine_report, generate_comparison_report
 from model_card import render_model_card
+from PIL import Image
+from report import generate_cine_report, generate_comparison_report, generate_static_report
+from xai import build_xai_panel
 
 # ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -79,14 +89,16 @@ if "ps_source" not in st.session_state:
 # ── Pseudo-LDDM v2 cine synthesis ─────────────────────────────────────────────
 
 def ornstein_uhlenbeck(n, theta=0.3, sigma=1.0, rng=None):
-    if rng is None: rng = np.random.default_rng()
+    if rng is None:
+        rng = np.random.default_rng()
     x = np.zeros(n)
     for t in range(1, n):
         x[t] = x[t-1] + theta * (0 - x[t-1]) + sigma * rng.normal(0, 1)
     return x
 
 def add_rician_speckle(img, std=0.08, rng=None):
-    if rng is None: rng = np.random.default_rng()
+    if rng is None:
+        rng = np.random.default_rng()
     n1 = rng.normal(0, std, img.shape).astype(np.float32)
     n2 = rng.normal(0, std, img.shape).astype(np.float32)
     return np.clip(np.sqrt((img + n1) ** 2 + n2 ** 2), 0, 1)
@@ -111,7 +123,8 @@ def generate_cine(img_gray, n_frames=N_FRAMES, seed=42):
     frames = []
     for i in range(n_frames):
         M = cv2.getRotationMatrix2D((cx, cy), float(rot[i]), 1.0)
-        M[0, 2] += float(tx[i]); M[1, 2] += float(ty[i])
+        M[0, 2] += float(tx[i])
+        M[1, 2] += float(ty[i])
         w = cv2.warpAffine(img_f, M, (INPUT_W, INPUT_H),
                            flags=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -213,7 +226,8 @@ REPORTED_METRICS = {
 DEMO_DIR = Path("demo_subjects")
 
 def get_demo_subjects():
-    if not DEMO_DIR.exists(): return []
+    if not DEMO_DIR.exists():
+        return []
     return sorted([f.name for f in DEMO_DIR.glob("*.png")])
 
 def load_demo_image(filename):
@@ -577,7 +591,7 @@ with tab_static:
                 f"- **HC formula:** Ramanujan ellipse perimeter approximation\n"
                 f"- **GA formula:** Hadlock et al. AJR 1984 (±2 weeks CI)\n"
                 f"- **Pixel spacing:** {pixel_spacing:.4f} mm/px"
-                + (f"\n- **Pruning:** Hybrid Crossover channel merging + KD recovery · 3 prune-FT cycles · 49.1% channel compression · Wilcoxon p=0.0049" if use_phase4a else "")
+                + ("\n- **Pruning:** Hybrid Crossover channel merging + KD recovery · 3 prune-FT cycles · 49.1% channel compression · Wilcoxon p=0.0049" if use_phase4a else "")
             )
 
 
@@ -730,9 +744,11 @@ with tab_cine:
                 ax.fill_between(range(len(result_c["per_frame_hc"])),
                                 hc - std, hc + std, alpha=0.2, color="#2563eb",
                                 label=f"±1 std ({std:.2f} mm)")
-                ax.set_xlabel("Frame"); ax.set_ylabel("HC (mm)")
+                ax.set_xlabel("Frame")
+                ax.set_ylabel("HC (mm)")
                 ax.set_title("HC stability across the cine-loop")
-                ax.legend(fontsize=8); ax.grid(alpha=0.3)
+                ax.legend(fontsize=8)
+                ax.grid(alpha=0.3)
                 st.pyplot(fig, use_container_width=False)
                 plt.close(fig)
                 st.markdown("---")
@@ -779,7 +795,7 @@ with tab_cine:
                 f"- **Runtime inference:** {result_c['elapsed_ms']:.1f} ms on {str(DEVICE).upper()}\n"
                 f"- **Ablation (no attention):** Dice 81.48% · MAE 19.37mm\n"
                 f"- **Pixel spacing:** {pixel_spacing:.4f} mm/px"
-                + (f"\n- **Pruning:** Hybrid Crossover + surgical decoder reconstruction + KD · 49.6% channel compression · Wilcoxon p=0.1013 (NS — statistically indistinguishable from baseline)" if use_phase4b else "")
+                + ("\n- **Pruning:** Hybrid Crossover + surgical decoder reconstruction + KD · 49.6% channel compression · Wilcoxon p=0.1013 (NS — statistically indistinguishable from baseline)" if use_phase4b else "")
             )
 
 
