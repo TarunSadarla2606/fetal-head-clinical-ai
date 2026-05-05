@@ -1,5 +1,5 @@
 """
-report.py — Fetal Head Circumference Clinical AI v3.2
+report.py — Fetal Head Circumference Clinical AI v3.3
 ACR/AIUM/ESR-compliant PDF report generation.
 
 Public functions:
@@ -8,11 +8,12 @@ Public functions:
   generate_comparison_report() — All four models head-to-head (Tab 3)
   generate_pdf_report()        — Backwards-compatible router
 
-Page layout (v3.1):
-  Page 1  Header + Patient/Exam + Indication + Technical + Biometric Findings
-  Page 2  Images + Impression + Clinical Interpretation
-  Page 3  AI System Validation Summary + Sign-off + Regulatory Notice
-  Page 4  Appendix A — model engineering details (only when compressed model used)
+Page layout (v3.3 — explicit PageBreak between every section block):
+  Page 1  Header + Patient/Exam + Indication + Technical Parameters
+  Page 2  Biometric Findings + GA Comparison + EDD footnote
+  Page 3  Images + Impression + Clinical Interpretation
+  Page 4  AI System Validation Summary + Sign-off + Regulatory Notice
+  Page 5  Appendix A — model engineering details (only when compressed model used)
 
 Two narrative modes:
   template — rule-based paragraphs, grey accent, "AUTOMATED TEMPLATE REPORT"
@@ -30,7 +31,6 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
     Image,
-    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -546,14 +546,15 @@ def _section_patient_exam(story, st, report):
 
 
 def _ga_exam_type(ga_weeks) -> str:
+    """Trimester display label. Boundaries: <14w / 14–28w / ≥28w (ACOG/ISUOG)."""
     if ga_weeks is None or ga_weeks == 0:
         return None  # rendered as 'Not provided' by _field_value
-    if ga_weeks < 14:
-        return "First trimester"
-    elif ga_weeks < 28:
-        return "Second trimester"
-    else:
-        return "Third trimester"
+    ga_days = ga_weeks * 7
+    if ga_days < 98:
+        return "First trimester (<14w)"
+    elif ga_days < 196:
+        return "Second trimester (14–28w)"
+    return "Third trimester (≥28w)"
 
 
 # ── Section 3 — Clinical Indication ───────────────────────────────────────────
@@ -579,15 +580,30 @@ def _section_clinical_indication(story, st, report):
 # ── Section 4 — Technical Parameters ──────────────────────────────────────────
 
 
+def _ps_source(report) -> str:
+    """Resolve pixel spacing source — one of 'DICOM', 'CSV', 'USER'.
+
+    Reads `pixel_spacing_source` first (3-state), falls back to the legacy
+    `pixel_spacing_dicom_derived` boolean.
+    """
+    src = getattr(report, "pixel_spacing_source", None)
+    if isinstance(src, str) and src.upper() in {"DICOM", "CSV", "USER"}:
+        return src.upper()
+    return "DICOM" if getattr(report, "pixel_spacing_dicom_derived", False) else "USER"
+
+
 def _section_technical_params(story, st, report):
     story.append(Paragraph("Technical Parameters", st["sec"]))
     _section_rule(story)
 
     ps_mm = report.pixel_spacing_mm or 0.070
-    dicom_flag = getattr(report, "pixel_spacing_dicom_derived", False)
-    ps_source = (
-        "DICOM-derived ✓" if dicom_flag else f"{_WARN} Estimated — verify before clinical use"
-    )
+    src = _ps_source(report)
+    if src == "DICOM":
+        ps_source = "✓ DICOM-derived (tag 0028,0030)"
+    elif src == "CSV":
+        ps_source = "✓ Verified (HC18 dataset)"
+    else:
+        ps_source = f"{_WARN} User-supplied — verify before clinical use"
 
     us_approach = (report.us_approach or "transabdominal").capitalize()
     image_quality = (report.image_quality or "not recorded").capitalize()
@@ -629,9 +645,12 @@ def _section_technical_params(story, st, report):
     col_w = [150, 120, 225]
     t = Table(rows, colWidths=col_w)
     ts = _tbl_style()
-    if not dicom_flag:
+    # Highlight pixel-spacing row only when source is user-supplied
+    if src == "USER":
         ts.add("TEXTCOLOR", (0, 3), (-1, 3), _AMBER)
         ts.add("FONTNAME", (0, 3), (0, 3), "Helvetica-Bold")
+    elif src in {"DICOM", "CSV"}:
+        ts.add("TEXTCOLOR", (2, 3), (2, 3), _PRUNED)
     t.setStyle(ts)
     story.append(t)
     story.append(Spacer(1, 3 * mm))
@@ -643,13 +662,13 @@ def _section_technical_params(story, st, report):
 def _confidence_label_effective(report, base_label: str | None) -> str:
     """Downgrade HIGH CONFIDENCE → MODERATE when pixel spacing is unverified.
 
-    HIGH CONFIDENCE requires both adequate segmentation coverage AND
-    DICOM-verified pixel spacing. If pixel spacing was user-supplied or
-    defaulted, cap the confidence rating regardless of segmentation quality.
+    HIGH requires both adequate segmentation coverage AND a verified pixel
+    spacing source (DICOM tag or HC18 dataset CSV lookup). User-supplied
+    spacing caps the confidence rating regardless of segmentation quality.
     """
     base = base_label or "—"
-    dicom_flag = bool(getattr(report, "pixel_spacing_dicom_derived", False))
-    if not dicom_flag and "HIGH" in base.upper():
+    src = _ps_source(report)
+    if src == "USER" and "HIGH" in base.upper():
         return "MODERATE — pixel spacing unverified"
     return base
 
@@ -658,12 +677,12 @@ def _section_biometric_findings(story, st, report):
     story.append(Paragraph("Biometric Findings", st["sec"]))
     _section_rule(story)
 
-    dicom_flag = bool(getattr(report, "pixel_spacing_dicom_derived", False))
+    src = _ps_source(report)
     ps_mm = report.pixel_spacing_mm or 0.070
 
-    # Pixel-spacing warning banner — surface this prominently rather than
-    # burying it in a table footnote.
-    if not dicom_flag:
+    # Pixel-spacing warning banner — only surfaced when source is user-supplied.
+    # DICOM-derived and HC18 CSV sources are both treated as verified.
+    if src == "USER":
         warn_data = [
             [
                 Paragraph(
@@ -728,20 +747,21 @@ def _section_biometric_findings(story, st, report):
                 P(f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range"),
             ],
         )
-        # BPD-HC discordance row when both GA estimates are available
+        # BPD-HC discordance row when both GA estimates are available.
+        # Display in days only — "1w 0d" for 7 days is ambiguous in this context.
         if bpd_ga_weeks and ga_weeks:
             disc_days_bpd = abs(round(ga_weeks * 7) - round(bpd_ga_weeks * 7))
             if disc_days_bpd > 10:
                 rows.append([
                     P("HC/BPD GA discordance"),
-                    P(_format_weeks_days(disc_days_bpd)),
-                    P(f"{_WARN} >10 days — ISUOG: consider additional biometry or clinical review"),
+                    P(f"{disc_days_bpd}d"),
+                    P(f"{_WARN} {disc_days_bpd}d discordance — clinical review recommended"),
                 ])
             else:
                 rows.append([
                     P("HC/BPD agreement"),
-                    P(_format_weeks_days(disc_days_bpd)),
-                    P("Within 10-day threshold"),
+                    P(f"{disc_days_bpd}d"),
+                    P(f"Within 10-day threshold ({disc_days_bpd}d agreement)"),
                 ])
     else:
         rows.insert(
@@ -810,8 +830,11 @@ def _section_biometric_findings(story, st, report):
             "guidelines.</i>",
             st["footnote"],
         )
-        # KeepTogether prevents mid-table page break on the GA Comparison block.
-        story.append(KeepTogether([Spacer(1, 2 * mm), lt, footnote]))
+        # Explicit page break in _build_story ensures this block has its own page;
+        # KeepTogether is no longer required.
+        story.append(Spacer(1, 2 * mm))
+        story.append(lt)
+        story.append(footnote)
     elif not lmp_val:
         story.append(
             Paragraph(
@@ -1130,7 +1153,7 @@ def _section_regulatory(story, st, ga_weeks=0.0):
         Paragraph(
             "HC18 dataset — Radboud University Medical Center, Nijmegen, Netherlands. "
             "For research and evaluation purposes only. "
-            "System: TemporalFetaSegNet / Fetal Head Clinical AI v3.2 — "
+            "System: TemporalFetaSegNet / Fetal Head Clinical AI v3.3 — "
             "Tarun Sadarla, MS Artificial Intelligence, University of North Texas, 2026. "
             f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
             st["footer"],
@@ -1387,10 +1410,10 @@ def _llm_comparison_narrative(results: dict, api_key: str):
 
 def _rule_static_p1(hc, ga_str, ga_weeks, trim):
     """Terse biometric assessment (2-3 sentences)."""
-    ci_str = _ga_ci_string(ga_weeks) if ga_weeks else "±2 weeks"
+    ci_bare = _ci_bare(_ga_ci_string(ga_weeks)) if ga_weeks else "±2 weeks"
     hc_disp = f"{hc:.1f} mm" if hc else "—"
     return (
-        f"HC {hc_disp}. GA estimated at {ga_str} (Hadlock 1984; {ci_str}). "
+        f"HC {hc_disp}. GA estimated at {ga_str} (Hadlock 1984; {ci_bare}). "
         f"Within ISUOG ±3 mm biometry threshold. "
         f"Clinical correlation with menstrual dating and prior biometry recommended."
     )
@@ -1411,12 +1434,12 @@ def _rule_static_p2(gradcam_ok):
 
 def _rule_cine_p1(hc, ga_str, ga_weeks, trim, rel, std):
     """Terse temporal biometric assessment."""
-    ci_str = _ga_ci_string(ga_weeks) if ga_weeks else "±2 weeks"
+    ci_bare = _ci_bare(_ga_ci_string(ga_weeks)) if ga_weeks else "±2 weeks"
     rel_desc = "excellent" if rel > 0.97 else "good" if rel > 0.93 else "moderate"
     hc_disp = f"{hc:.1f} mm" if hc else "—"
     return (
         f"Consensus HC {hc_disp} from 16-frame cine. GA estimated at {ga_str} "
-        f"(Hadlock 1984; {ci_str}). Inter-frame concordance {rel_desc} ({std:.2f} mm deviation). "
+        f"(Hadlock 1984; {ci_bare}). Inter-frame concordance {rel_desc} ({std:.2f} mm deviation). "
         "Within ISUOG ±3 mm threshold. Clinical correlation with menstrual dating recommended."
     )
 
@@ -1447,11 +1470,11 @@ def _rule_compression_note(model_name, elapsed_ms):
 
 
 def _rule_impression(hc, ga_str, ga_weeks, trim):
-    ci_str = _ga_ci_string(ga_weeks) if ga_weeks else "±2 weeks"
+    ci_bare = _ci_bare(_ga_ci_string(ga_weeks)) if ga_weeks else "±2 weeks"
     hc_str = f"{hc:.1f} mm" if hc else "not available"
     return (
         f"AI-assisted head circumference measurement: {hc_str}. "
-        f"Estimated gestational age: {ga_str} (confidence interval {ci_str}). "
+        f"Estimated gestational age: {ga_str} (Hadlock 1984; {ci_bare}). "
         "Measurement within ISUOG clinically acceptable biometry threshold (±3 mm). "
         "Automated measurement requires verification by a qualified sonographer "
         "prior to clinical use."
@@ -1487,14 +1510,16 @@ def _build_story(
     report_type_label: str,
     is_temporal: bool,
     report=None,
+    pixel_spacing_source: str | None = None,
 ) -> list:
     """Assemble the complete story list for both static and cine reports.
 
-    Page layout (v3.1):
-      Page 1  Header + Patient/Exam + Indication + Technical + Biometric Findings
-      Page 2  Images + Impression + Clinical Interpretation
-      Page 3  AI System Validation + Sign-off + Regulatory
-      Page 4  Appendix A (compressed only)
+    Page layout (v3.3 — explicit PageBreak between every section block):
+      Page 1  Header + Patient/Exam + Indication + Technical Parameters
+      Page 2  Biometric Findings + GA Comparison + EDD footnote
+      Page 3  Images + Impression + Clinical Interpretation
+      Page 4  AI System Validation + Sign-off + Regulatory
+      Page 5  Appendix A (compressed only)
     """
     llm = use_llm and bool(api_key)
     st = _styles(llm)
@@ -1582,18 +1607,25 @@ def _build_story(
         )
         story.append(Spacer(1, 2 * mm))
 
+    # ─── PAGE 2: Biometric Findings + GA Comparison + EDD footnote ───────────
+    story.append(PageBreak())
     _section_biometric_findings(
-        story, st, _BiometricProxy(hc, ga_str, ga_weeks, trim, conf_lbl, report)
+        story,
+        st,
+        _BiometricProxy(hc, ga_str, ga_weeks, trim, conf_lbl, report, pixel_spacing_source),
     )
 
     if is_temporal:
         _section_temporal_table(story, st, rel, std, n_frames)
 
-    # ─── PAGE 2: Images + Impression + Clinical Interpretation ───────────────
+    # ─── PAGE 3: Images + Impression + Clinical Interpretation ───────────────
     story.append(PageBreak())
     _section_images(story, st, report if report is not None else _NoImages())
     _section_impression(
-        story, st, p_impression, _BiometricProxy(hc, ga_str, ga_weeks, trim, conf_lbl, report)
+        story,
+        st,
+        p_impression,
+        _BiometricProxy(hc, ga_str, ga_weeks, trim, conf_lbl, report, pixel_spacing_source),
     )
     _section_interpretation(
         story,
@@ -1607,7 +1639,7 @@ def _build_story(
         discordance_note=discordance_note,
     )
 
-    # ─── PAGE 3: AI System Validation + Sign-off + Regulatory ────────────────
+    # ─── PAGE 4: AI System Validation + Sign-off + Regulatory ────────────────
     story.append(PageBreak())
     _section_ai_performance(story, st, model_name, elapsed)
 
@@ -1616,7 +1648,7 @@ def _build_story(
 
     _section_regulatory(story, st, ga_weeks=ga_weeks)
 
-    # ─── PAGE 4: Appendix A (only when compressed model used) ────────────────
+    # ─── PAGE 5: Appendix A (only when compressed model used) ────────────────
     if m["pruned"]:
         _appendix_technical(story, st, model_name, elapsed)
 
@@ -1626,7 +1658,7 @@ def _build_story(
 class _BiometricProxy:
     """Minimal proxy so section builders work without a full report DB object."""
 
-    def __init__(self, hc, ga_str, ga_weeks, trim, conf, report=None):
+    def __init__(self, hc, ga_str, ga_weeks, trim, conf, report=None, ps_source=None):
         self.hc_mm = hc
         self.ga_str = ga_str
         self.ga_weeks = ga_weeks
@@ -1635,6 +1667,12 @@ class _BiometricProxy:
         self.lmp = getattr(report, "lmp", None)
         self.pixel_spacing_mm = getattr(report, "pixel_spacing_mm", None)
         self.pixel_spacing_dicom_derived = getattr(report, "pixel_spacing_dicom_derived", False)
+        # 3-state source — overrides legacy bool when set
+        self.pixel_spacing_source = (
+            ps_source
+            if ps_source is not None
+            else getattr(report, "pixel_spacing_source", None)
+        )
         self.bpd_mm = getattr(report, "bpd_mm", None)
         self.fetal_presentation = getattr(report, "fetal_presentation", None)
         self.prior_biometry = getattr(report, "prior_biometry", None)
@@ -1713,8 +1751,15 @@ def generate_static_report(
     draft: bool = False,
     signed_meta: dict | None = None,
     report=None,
+    pixel_spacing_source: str | None = None,
 ) -> bytes:
-    """PDF report for static single-frame analysis (Phase 0 / Phase 4a)."""
+    """PDF report for static single-frame analysis (Phase 0 / Phase 4a).
+
+    pixel_spacing_source: 'DICOM' | 'CSV' | 'USER' — drives the technical-
+    parameters note, the biometric-findings warning banner, and the
+    confidence-label downgrade rule. Falls back to the legacy
+    `report.pixel_spacing_dicom_derived` boolean when None.
+    """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1736,6 +1781,7 @@ def generate_static_report(
         report_type_label="STATIC SINGLE-FRAME ANALYSIS",
         is_temporal=False,
         report=report,
+        pixel_spacing_source=pixel_spacing_source,
     )
     if draft:
         doc.build(story, onFirstPage=_draw_draft_watermark, onLaterPages=_draw_draft_watermark)
@@ -1755,8 +1801,12 @@ def generate_cine_report(
     draft: bool = False,
     signed_meta: dict | None = None,
     report=None,
+    pixel_spacing_source: str | None = None,
 ) -> bytes:
-    """PDF report for temporal cine-loop analysis (Phase 2 / Phase 4b)."""
+    """PDF report for temporal cine-loop analysis (Phase 2 / Phase 4b).
+
+    pixel_spacing_source: 'DICOM' | 'CSV' | 'USER' — see generate_static_report.
+    """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -1778,6 +1828,7 @@ def generate_cine_report(
         report_type_label="TEMPORAL CINE-LOOP ANALYSIS",
         is_temporal=True,
         report=report,
+        pixel_spacing_source=pixel_spacing_source,
     )
     if draft:
         doc.build(story, onFirstPage=_draw_draft_watermark, onLaterPages=_draw_draft_watermark)

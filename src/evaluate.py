@@ -108,7 +108,8 @@ def hadlock_ga(hc_mm: float) -> Dict:
         Dict with keys:
           'ga_weeks'  (float),
           'ga_str'    ("XwYd" string),
-          'trimester' ("Early (<20w)", "Mid (20–30w)", or "Late (>30w)")
+          'trimester' ("First trimester (<14w)", "Second trimester (14–28w)",
+                       or "Third trimester (≥28w)")
     """
     x      = hc_mm / 10.0
     ga_raw = 8.96 + 0.540 * x - 0.0040 * x**2 + 0.000399 * x**3
@@ -118,12 +119,13 @@ def hadlock_ga(hc_mm: float) -> Dict:
     days  = round((ga - weeks) * 7)
     ga_str = f"{weeks}w{days}d"
 
-    if ga < 20:
-        trimester = "Early (<20w)"
-    elif ga < 30:
-        trimester = "Mid (20–30w)"
+    ga_days = ga * 7
+    if ga_days < 98:
+        trimester = "First trimester (<14w)"
+    elif ga_days < 196:
+        trimester = "Second trimester (14–28w)"
     else:
-        trimester = "Late (>30w)"
+        trimester = "Third trimester (≥28w)"
 
     return {"ga_weeks": ga, "ga_str": ga_str, "trimester": trimester}
 

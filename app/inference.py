@@ -664,11 +664,19 @@ def hadlock_ga(hc_mm: float) -> tuple[float, str]:
 
 
 def classify_trimester(ga_weeks: float) -> str:
-    if ga_weeks < 20:
-        return "Early (<20w)"
-    elif ga_weeks <= 30:
-        return "Mid (20–30w)"
-    return "Late (>30w)"
+    """Clinical trimester classification by gestational age.
+
+    Boundaries (ACOG / ISUOG / ACR):
+      First  trimester: < 14 weeks 0 days
+      Second trimester: 14 weeks 0 days to 27 weeks 6 days
+      Third  trimester: ≥ 28 weeks 0 days
+    """
+    ga_days = ga_weeks * 7
+    if ga_days < 98:
+        return "First trimester (<14w)"
+    elif ga_days < 196:
+        return "Second trimester (14–28w)"
+    return "Third trimester (≥28w)"
 
 
 def confidence_label(reliability: float) -> tuple[str, str]:

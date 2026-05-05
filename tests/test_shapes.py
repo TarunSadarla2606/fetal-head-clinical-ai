@@ -119,9 +119,10 @@ class TestHadlockGa:
 
     def test_trimester_labels(self):
         from src.evaluate import hadlock_ga
-        assert hadlock_ga(100.0)["trimester"] == "Early (<20w)"
-        assert hadlock_ga(250.0)["trimester"] == "Mid (20–30w)"
-        assert hadlock_ga(350.0)["trimester"] == "Late (>30w)"
+        # Boundaries: <14w → First; 14–28w → Second; ≥28w → Third
+        assert hadlock_ga(100.0)["trimester"] == "First trimester (<14w)"
+        assert hadlock_ga(250.0)["trimester"] == "Second trimester (14–28w)"
+        assert hadlock_ga(350.0)["trimester"] == "Third trimester (≥28w)"
 
 
 class TestReliabilityScore:

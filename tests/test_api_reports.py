@@ -57,7 +57,7 @@ def _payload(**overrides):
         "hc_mm": 220.5,
         "ga_str": "24w 0d",
         "ga_weeks": 24.0,
-        "trimester": "Mid (20–30w)",
+        "trimester": "Second trimester (14–28w)",
         "reliability": 0.92,
         "confidence_label": "HIGH",
         "elapsed_ms": 412.0,

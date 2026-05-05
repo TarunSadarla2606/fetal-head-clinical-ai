@@ -54,7 +54,7 @@ def _mock_prediction() -> dict:
         "hc_mm": 274.3,
         "ga_str": "28w 1d",
         "ga_weeks": 28.14,
-        "trimester": "Mid (20–30w)",
+        "trimester": "Third trimester (≥28w)",
         "reliability": 0.95,
         "hc_std_mm": 0.8,
         "confidence_label": "HIGH CONFIDENCE",

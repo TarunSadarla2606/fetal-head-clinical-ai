@@ -126,7 +126,7 @@ Dice 81.48% · MAE 19.37mm — confirming that the temporal attention module is 
 A structured bias audit was conducted in Phase 3 of this project as part of the clinical AI pipeline validation.
 
 **Subgroup analysis performed:**
-- **By gestational age trimester:** Early (<20w), Mid (20–30w), Late (>30w)
+- **By gestational age trimester:** First (<14w), Second (14–28w), Third (≥28w)
 - **By image quality proxy:** Laplacian variance tertiles (low / mid / high sharpness)
 - **By HC size:** Small (<250mm), Medium (250–310mm), Large (>310mm)
 
