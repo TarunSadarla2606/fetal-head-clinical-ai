@@ -91,6 +91,7 @@ class CreateReportRequest(BaseModel):
     us_approach: Literal["transabdominal", "transvaginal"] | None = None
     image_quality: Literal["optimal", "suboptimal", "limited"] | None = None
     pixel_spacing_dicom_derived: bool = False
+    pixel_spacing_source: Literal["DICOM", "CSV", "USER"] | None = None
     report_mode: Literal["template", "llm"] = "template"
     fetal_presentation: Literal["cephalic", "breech", "transverse", "not_assessed"] | None = (
         "not_assessed"
@@ -142,6 +143,7 @@ class ReportResponse(BaseModel):
     us_approach: str | None = None
     image_quality: str | None = None
     pixel_spacing_dicom_derived: bool = False
+    pixel_spacing_source: Literal["DICOM", "CSV", "USER"] | None = None
     report_mode: str = "template"
     accession_number: str | None = None
     original_image_b64: str | None = None

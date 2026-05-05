@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS reports (
     us_approach              TEXT,
     image_quality            TEXT,
     pixel_spacing_dicom_derived INTEGER NOT NULL DEFAULT 0,
+    pixel_spacing_source     TEXT,
     report_mode              TEXT NOT NULL DEFAULT 'template',
     accession_number         TEXT,
     original_image_b64       TEXT,
@@ -107,6 +108,7 @@ _MIGRATION_COLUMNS = [
     "us_approach              TEXT",
     "image_quality            TEXT",
     "pixel_spacing_dicom_derived INTEGER NOT NULL DEFAULT 0",
+    "pixel_spacing_source     TEXT",
     "report_mode              TEXT NOT NULL DEFAULT 'template'",
     "accession_number         TEXT",
     "original_image_b64       TEXT",
@@ -154,6 +156,7 @@ class Report:
     us_approach: str | None = None
     image_quality: str | None = None
     pixel_spacing_dicom_derived: bool = False
+    pixel_spacing_source: str | None = None
     report_mode: str = "template"
     accession_number: str | None = None
     original_image_b64: str | None = None
@@ -199,6 +202,7 @@ class Report:
             "us_approach": self.us_approach,
             "image_quality": self.image_quality,
             "pixel_spacing_dicom_derived": self.pixel_spacing_dicom_derived,
+            "pixel_spacing_source": self.pixel_spacing_source,
             "report_mode": self.report_mode,
             "accession_number": self.accession_number,
             "original_image_b64": self.original_image_b64,
@@ -307,6 +311,7 @@ def _row_to_report(row: sqlite3.Row) -> Report:
         us_approach=_row_get(row, "us_approach"),
         image_quality=_row_get(row, "image_quality"),
         pixel_spacing_dicom_derived=bool(_row_get(row, "pixel_spacing_dicom_derived", 0)),
+        pixel_spacing_source=_row_get(row, "pixel_spacing_source"),
         report_mode=_row_get(row, "report_mode", "template") or "template",
         accession_number=_row_get(row, "accession_number"),
         original_image_b64=_row_get(row, "original_image_b64"),
@@ -368,6 +373,7 @@ def create_report(
     us_approach: str | None = None,
     image_quality: str | None = None,
     pixel_spacing_dicom_derived: bool = False,
+    pixel_spacing_source: str | None = None,
     report_mode: str = "template",
     original_image_b64: str | None = None,
     overlay_image_b64: str | None = None,
@@ -392,12 +398,13 @@ def create_report(
                 referring_physician, patient_id, patient_dob, lmp,
                 ordering_facility, sonographer_name, clinical_indication,
                 us_approach, image_quality,
-                pixel_spacing_dicom_derived, report_mode, accession_number,
+                pixel_spacing_dicom_derived, pixel_spacing_source,
+                report_mode, accession_number,
                 original_image_b64, overlay_image_b64, gradcam_image_b64,
                 fetal_presentation, bpd_mm, prior_biometry
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -431,6 +438,7 @@ def create_report(
                 us_approach,
                 image_quality,
                 int(pixel_spacing_dicom_derived),
+                pixel_spacing_source,
                 report_mode,
                 accession,
                 original_image_b64,

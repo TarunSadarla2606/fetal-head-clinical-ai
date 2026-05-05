@@ -748,20 +748,21 @@ def _section_biometric_findings(story, st, report):
             ],
         )
         # BPD-HC discordance row when both GA estimates are available.
-        # Display in days only — "1w 0d" for 7 days is ambiguous in this context.
+        # Mixed format: ≤7 days as "Xd", >7 days as "Xw Yd" so e.g. 12d → "1w 5d".
         if bpd_ga_weeks and ga_weeks:
             disc_days_bpd = abs(round(ga_weeks * 7) - round(bpd_ga_weeks * 7))
+            disc_disp = f"{disc_days_bpd}d" if disc_days_bpd <= 7 else _format_weeks_days(disc_days_bpd)
             if disc_days_bpd > 10:
                 rows.append([
                     P("HC/BPD GA discordance"),
-                    P(f"{disc_days_bpd}d"),
-                    P(f"{_WARN} {disc_days_bpd}d discordance — clinical review recommended"),
+                    P(disc_disp),
+                    P(f"{_WARN} {disc_disp} discordance — clinical review recommended"),
                 ])
             else:
                 rows.append([
                     P("HC/BPD agreement"),
-                    P(f"{disc_days_bpd}d"),
-                    P(f"Within 10-day threshold ({disc_days_bpd}d agreement)"),
+                    P(disc_disp),
+                    P(f"Within 10-day threshold ({disc_disp} agreement)"),
                 ])
     else:
         rows.insert(

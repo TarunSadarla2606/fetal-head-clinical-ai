@@ -325,6 +325,7 @@ def create_report_endpoint(
         us_approach=body.us_approach,
         image_quality=body.image_quality,
         pixel_spacing_dicom_derived=body.pixel_spacing_dicom_derived,
+        pixel_spacing_source=body.pixel_spacing_source,
         report_mode=body.report_mode,
         original_image_b64=original_b64,
         overlay_image_b64=overlay_b64,
