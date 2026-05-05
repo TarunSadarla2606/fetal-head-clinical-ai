@@ -5,6 +5,7 @@ Routes
 GET  /                              Redirect to interactive API docs
 GET  /health                        System status, loaded model list, device
 GET  /demo/list                     List filenames in demo_subjects directory
+GET  /demo/{filename}/metadata      Pixel spacing + HC reference from HC18 CSV
 GET  /demo/{filename}               Serve a demo subject image
 POST /infer                         Single-frame HC measurement
 GET  /findings/{id}/gradcam         GradCAM++ overlay PNG (Batch 5)
@@ -52,6 +53,31 @@ APP_VERSION = "2.5.0"
 
 _DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "demo_subjects"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
+
+# HC18 CSV: filename → (pixel_spacing_mm, hc_reference_mm)
+# Loaded once at startup; absent file is handled gracefully.
+def _load_hc18_csv() -> dict[str, dict]:
+    csv_path = _DEMO_DIR.parent / "training_set_pixel_size_and_HC.csv"
+    result: dict[str, dict] = {}
+    if not csv_path.is_file():
+        return result
+    try:
+        import csv
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                fn = (row.get("filename") or "").strip()
+                ps = (row.get("pixel size(mm)") or "").strip()
+                hc = (row.get("head circumference (mm)") or "").strip()
+                if fn and ps:
+                    result[fn] = {
+                        "pixel_spacing_mm": float(ps),
+                        "hc_reference_mm": float(hc) if hc else None,
+                    }
+    except Exception:
+        pass
+    return result
+
+_HC18_META: dict[str, dict] = _load_hc18_csv()
 
 app = FastAPI(
     title="FetalScan AI — Clinical Inference API",
@@ -125,6 +151,20 @@ def list_demo_subjects() -> dict:
         return {"files": []}
     names = [f.name for f in _DEMO_DIR.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTS]
     return {"files": sorted(names)}
+
+
+@app.get("/demo/{filename}/metadata", tags=["Demo"])
+def get_demo_metadata(filename: str) -> dict:
+    """Return pixel spacing and HC reference from the HC18 CSV for one demo subject.
+
+    Returns 404 when the filename is not in the CSV (non-HC18 demo images).
+    Frontend uses this to auto-apply the correct pixel spacing and display
+    the ground-truth HC reference alongside the AI prediction.
+    """
+    meta = _HC18_META.get(filename)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"No HC18 metadata for {filename!r}")
+    return meta
 
 
 @app.get("/demo/{filename}", tags=["Demo"])
