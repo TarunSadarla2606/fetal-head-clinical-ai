@@ -317,3 +317,49 @@ def test_demo_seed_includes_three_abnormal_cases():
         assert delta_weeks > 1.5, f"{sid} only {delta_weeks:.2f} wk off mean"
         flagged += 1
     assert flagged == 3
+
+
+# ── 8.3  Image quality scoring ───────────────────────────────────────────────
+
+
+def test_validate_input_emits_quality_fields():
+    """validate_input() now returns quality_score / quality_label / blur_score."""
+    import numpy as np
+
+    from app.inference import validate_input
+
+    # A reasonably-textured image
+    rng = np.random.default_rng(42)
+    img = (rng.standard_normal((256, 384)) * 40 + 120).clip(0, 255).astype(np.uint8)
+    out = validate_input(img)
+    assert "quality_score" in out and 0.0 <= out["quality_score"] <= 1.0
+    assert out["quality_label"] in {"poor", "suboptimal", "good", "excellent"}
+    assert out["blur_score"] > 0
+
+
+def test_validate_input_flags_blurry_image_as_poor_or_suboptimal():
+    """A flat (very low Laplacian variance) image should drop into the
+    poor or suboptimal quality tier and surface a warning."""
+    import numpy as np
+
+    from app.inference import validate_input
+
+    flat = np.full((256, 384), 120, dtype=np.uint8)
+    # Add tiny noise so dynamic_range check passes
+    flat = (flat + np.random.default_rng(0).integers(-3, 4, size=flat.shape)).astype(np.uint8)
+    out = validate_input(flat)
+    assert out["quality_label"] in {"poor", "suboptimal"}
+    assert any("quality" in w.lower() for w in out["warnings"])
+
+
+def test_validate_input_rates_high_texture_image_good_or_better():
+    """A high-texture image (lots of edges) should score good/excellent."""
+    import numpy as np
+
+    from app.inference import validate_input
+
+    rng = np.random.default_rng(7)
+    # Heavy structured edges — high Laplacian variance
+    img = (rng.standard_normal((256, 384)) * 80 + 120).clip(0, 255).astype(np.uint8)
+    out = validate_input(img)
+    assert out["quality_label"] in {"good", "excellent"}

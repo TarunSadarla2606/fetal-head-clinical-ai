@@ -20,6 +20,10 @@ class ValidationResult(BaseModel):
     valid: bool
     warnings: list[str]
     checks: dict[str, bool]
+    # Batch 8.3 — composite image-quality score + label + raw blur metric
+    quality_score: float = 0.0
+    quality_label: Literal["poor", "suboptimal", "good", "excellent"] = "good"
+    blur_score: float = 0.0
 
 
 class InferResponse(BaseModel):
