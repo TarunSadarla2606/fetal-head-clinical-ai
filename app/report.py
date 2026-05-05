@@ -747,10 +747,11 @@ def _section_biometric_findings(story, st, report):
                 P(f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range"),
             ],
         )
-        # BPD-HC discordance — always display as "Xd" (days only).
+        # BPD-HC discordance — always display as "Xw Yd" (e.g. 5d → "0w 5d",
+        # 7d → "1w 0d", 12d → "1w 5d").
         if bpd_ga_weeks and ga_weeks:
             disc_days_bpd = abs(round(ga_weeks * 7) - round(bpd_ga_weeks * 7))
-            disc_disp = f"{disc_days_bpd}d"
+            disc_disp = _format_weeks_days(disc_days_bpd)
             if disc_days_bpd > 10:
                 rows.append([
                     P("HC/BPD GA discordance"),
