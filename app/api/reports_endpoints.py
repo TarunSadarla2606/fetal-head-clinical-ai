@@ -33,11 +33,18 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import Response
 
-from app.report import generate_cine_report, generate_static_report
+import json
+
+from app.report import (
+    generate_cine_report,
+    generate_combined_report,
+    generate_static_report,
+)
 
 from . import findings_store, model_manager, reports_db, xai_endpoints
 from .schemas import (
     AuditEntryResponse,
+    CreateCombinedReportRequest,
     CreateReportRequest,
     ReportResponse,
     SignReportRequest,
@@ -176,6 +183,42 @@ def _extract_images_from_store(
 def _render_pdf(report: reports_db.Report) -> bytes:
     """Render the stored Report into a PDF, applying watermark / sign-off
     sections based on is_signed."""
+    signed_meta = None
+    if report.is_signed:
+        signed_meta = {
+            "signed_by": report.signed_by,
+            "signed_at": report.signed_at,
+            "signoff_note": report.signoff_note,
+        }
+
+    # Combined multi-model report — dispatch to the dedicated renderer
+    if report.is_combined and report.combined_models_json:
+        try:
+            results = json.loads(report.combined_models_json)
+        except json.JSONDecodeError:
+            results = []
+        # Re-hydrate per-model images from findings_store at render time.
+        # Image blobs are not persisted to keep the DB row compact; if the
+        # finding has been evicted from the LRU, the PDF will show
+        # placeholders for that model's image triplet (graceful degradation).
+        for r in results:
+            fid = r.get("finding_id")
+            if fid:
+                orig, overlay, gradcam = _extract_images_from_store(fid)
+                r["original_image_b64"] = orig
+                r["overlay_image_b64"] = overlay
+                r["gradcam_image_b64"] = gradcam
+        return generate_combined_report(
+            results,
+            api_key=None,
+            use_llm=False,
+            pixel_spacing=report.pixel_spacing_mm or 0.070,
+            draft=not report.is_signed,
+            signed_meta=signed_meta,
+            report=report,
+            pixel_spacing_source=report.pixel_spacing_source,
+        )
+
     model_name = _MODEL_VARIANT_TO_REPORT_NAME.get(report.model, "Phase 0 — Static baseline")
     is_temporal = report.model in _TEMPORAL_VARIANTS
 
@@ -197,13 +240,6 @@ def _render_pdf(report: reports_db.Report) -> bytes:
         report.narrative_p3,
         report.narrative_impression,
     )
-    signed_meta = None
-    if report.is_signed:
-        signed_meta = {
-            "signed_by": report.signed_by,
-            "signed_at": report.signed_at,
-            "signoff_note": report.signoff_note,
-        }
     builder = generate_cine_report if is_temporal else generate_static_report
     return builder(
         result,
@@ -342,6 +378,137 @@ def create_report_endpoint(
         ip=ip,
         user_agent=ua,
         details=f"model={body.model}; mode={body.report_mode}; used_llm={used_llm}",
+    )
+    return ReportResponse(**report.to_dict())
+
+
+def _hydrate_combined_finding(item) -> dict:
+    """Merge findings_store data with explicit body values for one model."""
+    found: dict = {}
+    if item.finding_id:
+        rec = findings_store.get(item.finding_id)
+        if rec is not None:
+            f = rec.findings
+            found = {
+                "hc_mm": f.get("hc_mm"),
+                "ga_str": f.get("ga_str"),
+                "ga_weeks": f.get("ga_weeks"),
+                "trimester": f.get("trimester"),
+                "reliability": f.get("reliability"),
+                "confidence_label": f.get("confidence_label"),
+                "elapsed_ms": f.get("elapsed_ms"),
+            }
+    explicit = {
+        "hc_mm": item.hc_mm,
+        "ga_str": item.ga_str,
+        "ga_weeks": item.ga_weeks,
+        "trimester": item.trimester,
+        "reliability": item.reliability,
+        "confidence_label": item.confidence_label,
+        "elapsed_ms": item.elapsed_ms,
+    }
+    merged = {**found, **{k: v for k, v in explicit.items() if v is not None}}
+    merged["model"] = item.model
+    merged["model_name"] = _MODEL_VARIANT_TO_REPORT_NAME.get(item.model, item.model)
+    merged["finding_id"] = item.finding_id
+
+    # Per-model image triplet for the combined PDF's image strips
+    orig_b64, overlay_b64, gradcam_b64 = _extract_images_from_store(item.finding_id)
+    merged["original_image_b64"] = orig_b64
+    merged["overlay_image_b64"] = overlay_b64
+    merged["gradcam_image_b64"] = gradcam_b64
+    return merged
+
+
+@router.post(
+    "/studies/{study_id}/reports/combined",
+    response_model=ReportResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate a combined multi-model clinical report (2–4 models)",
+)
+def create_combined_report_endpoint(
+    study_id: str,
+    body: CreateCombinedReportRequest,
+    request: Request,
+):
+    if not study_id or len(study_id) > 200:
+        raise HTTPException(400, "study_id must be 1-200 chars")
+    if len(body.findings) < 2:
+        raise HTTPException(400, "combined report requires at least 2 model findings")
+
+    # Hydrate per-model finding dicts and verify each carries an HC value
+    per_model = [_hydrate_combined_finding(item) for item in body.findings]
+    missing_hc = [m["model"] for m in per_model if m.get("hc_mm") is None]
+    if missing_hc:
+        raise HTTPException(
+            400,
+            f"hc_mm missing for model(s): {missing_hc}. "
+            "Each entry needs a finding_id from /infer or explicit hc_mm.",
+        )
+
+    # Compute consensus for the persisted summary fields
+    from app.report import _consensus_from_results
+    consensus = _consensus_from_results(per_model)
+
+    # Strip image blobs out of the persisted JSON to keep the row compact —
+    # the PDF renderer re-fetches images from findings_store at render time.
+    persisted_models = [
+        {k: v for k, v in m.items()
+         if k not in ("original_image_b64", "overlay_image_b64", "gradcam_image_b64")}
+        for m in per_model
+    ]
+
+    report_mode = body.report_mode
+    used_llm = report_mode == "llm" and bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+    report = reports_db.create_report(
+        study_id=study_id,
+        finding_id=None,
+        patient_name=body.patient_name,
+        study_date=body.study_date,
+        model="combined",
+        hc_mm=consensus["hc_mm"],
+        ga_str=consensus["ga_str"],
+        ga_weeks=consensus["ga_weeks"],
+        trimester=consensus["trimester"],
+        reliability=consensus["reliability"],
+        confidence_label=consensus["confidence_label"],
+        pixel_spacing_mm=body.pixel_spacing_mm,
+        elapsed_ms=consensus["elapsed_total_ms"],
+        narrative_p1=None,
+        narrative_p2=None,
+        narrative_p3=None,
+        narrative_impression=None,
+        used_llm=used_llm,
+        referring_physician=body.referring_physician,
+        patient_id=body.patient_id,
+        patient_dob=body.patient_dob,
+        lmp=body.lmp,
+        ordering_facility=body.ordering_facility,
+        sonographer_name=body.sonographer_name,
+        clinical_indication=body.clinical_indication,
+        us_approach=body.us_approach,
+        image_quality=body.image_quality,
+        pixel_spacing_dicom_derived=body.pixel_spacing_dicom_derived,
+        pixel_spacing_source=body.pixel_spacing_source,
+        report_mode=body.report_mode,
+        original_image_b64=None,
+        overlay_image_b64=None,
+        gradcam_image_b64=None,
+        fetal_presentation=body.fetal_presentation,
+        bpd_mm=body.bpd_mm,
+        prior_biometry=body.prior_biometry,
+        is_combined=True,
+        combined_models_json=json.dumps(persisted_models),
+    )
+    ip, ua = _request_meta(request)
+    reports_db.add_audit(
+        report_id=report.id,
+        action="created_combined",
+        actor=None,
+        ip=ip,
+        user_agent=ua,
+        details=f"models={[m['model'] for m in per_model]}; mode={body.report_mode}",
     )
     return ReportResponse(**report.to_dict())
 

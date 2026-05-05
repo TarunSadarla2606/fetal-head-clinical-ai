@@ -74,7 +74,9 @@ CREATE TABLE IF NOT EXISTS reports (
     gradcam_image_b64        TEXT,
     fetal_presentation       TEXT,
     bpd_mm                   REAL,
-    prior_biometry           TEXT
+    prior_biometry           TEXT,
+    is_combined              INTEGER NOT NULL DEFAULT 0,
+    combined_models_json     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_reports_study   ON reports(study_id);
@@ -117,6 +119,8 @@ _MIGRATION_COLUMNS = [
     "fetal_presentation       TEXT",
     "bpd_mm                   REAL",
     "prior_biometry           TEXT",
+    "is_combined              INTEGER NOT NULL DEFAULT 0",
+    "combined_models_json     TEXT",
 ]
 
 
@@ -165,6 +169,8 @@ class Report:
     fetal_presentation: str | None = None
     bpd_mm: float | None = None
     prior_biometry: str | None = None
+    is_combined: bool = False
+    combined_models_json: str | None = None  # JSON-serialised list of per-model dicts
 
     def to_dict(self) -> dict:
         return {
@@ -211,6 +217,8 @@ class Report:
             "fetal_presentation": self.fetal_presentation,
             "bpd_mm": self.bpd_mm,
             "prior_biometry": self.prior_biometry,
+            "is_combined": self.is_combined,
+            "combined_models_json": self.combined_models_json,
         }
 
 
@@ -320,6 +328,8 @@ def _row_to_report(row: sqlite3.Row) -> Report:
         fetal_presentation=_row_get(row, "fetal_presentation"),
         bpd_mm=_row_get(row, "bpd_mm"),
         prior_biometry=_row_get(row, "prior_biometry"),
+        is_combined=bool(_row_get(row, "is_combined", 0)),
+        combined_models_json=_row_get(row, "combined_models_json"),
     )
 
 
@@ -381,6 +391,8 @@ def create_report(
     fetal_presentation: str | None = None,
     bpd_mm: float | None = None,
     prior_biometry: str | None = None,
+    is_combined: bool = False,
+    combined_models_json: str | None = None,
     db_path: str | None = None,
 ) -> Report:
     rid = f"rep_{uuid.uuid4().hex[:16]}"
@@ -401,10 +413,11 @@ def create_report(
                 pixel_spacing_dicom_derived, pixel_spacing_source,
                 report_mode, accession_number,
                 original_image_b64, overlay_image_b64, gradcam_image_b64,
-                fetal_presentation, bpd_mm, prior_biometry
+                fetal_presentation, bpd_mm, prior_biometry,
+                is_combined, combined_models_json
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -447,6 +460,8 @@ def create_report(
                 fetal_presentation,
                 bpd_mm,
                 prior_biometry,
+                int(is_combined),
+                combined_models_json,
             ),
         )
     return get_report(rid, db_path=db_path)  # type: ignore[return-value]

@@ -102,6 +102,55 @@ class CreateReportRequest(BaseModel):
     )
 
 
+class CombinedFinding(BaseModel):
+    """One per-model entry inside a combined-report request.
+
+    `finding_id` is preferred — the server hydrates HC / GA / images from the
+    in-memory findings_store. Explicit fields override the hydrated ones.
+    """
+
+    model: ModelVariant
+    finding_id: str | None = None
+    hc_mm: float | None = None
+    ga_str: str | None = None
+    ga_weeks: float | None = None
+    trimester: str | None = None
+    reliability: float | None = None
+    confidence_label: str | None = None
+    elapsed_ms: float | None = None
+
+
+class CreateCombinedReportRequest(BaseModel):
+    """Body for POST /studies/{study_id}/reports/combined.
+
+    Same patient/exam fields as the single-model variant, plus a list of
+    per-model findings (2–4 entries). The server computes consensus values
+    across the supplied findings and renders the multi-model PDF.
+    """
+
+    findings: list[CombinedFinding] = Field(min_length=2, max_length=4)
+    patient_name: str
+    study_date: str
+    pixel_spacing_mm: float | None = 0.070
+    referring_physician: str | None = None
+    patient_id: str | None = None
+    patient_dob: str | None = None
+    lmp: str | None = None
+    ordering_facility: str | None = None
+    sonographer_name: str | None = None
+    clinical_indication: str | None = None
+    us_approach: Literal["transabdominal", "transvaginal"] | None = None
+    image_quality: Literal["optimal", "suboptimal", "limited"] | None = None
+    pixel_spacing_dicom_derived: bool = False
+    pixel_spacing_source: Literal["DICOM", "CSV", "USER"] | None = None
+    report_mode: Literal["template", "llm"] = "template"
+    fetal_presentation: Literal["cephalic", "breech", "transverse", "not_assessed"] | None = (
+        "not_assessed"
+    )
+    bpd_mm: float | None = None
+    prior_biometry: str | None = None
+
+
 class SignReportRequest(BaseModel):
     signed_by: str = Field(min_length=1, max_length=200)
     signoff_note: str | None = Field(default=None, max_length=2000)
@@ -152,6 +201,8 @@ class ReportResponse(BaseModel):
     fetal_presentation: str | None = None
     bpd_mm: float | None = None
     prior_biometry: str | None = None
+    is_combined: bool = False
+    combined_models_json: str | None = None
 
 
 class AuditEntryResponse(BaseModel):
