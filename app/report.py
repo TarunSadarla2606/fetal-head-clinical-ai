@@ -1,5 +1,5 @@
 """
-report.py — Fetal Head Circumference Clinical AI v3.1
+report.py — Fetal Head Circumference Clinical AI v3.2
 ACR/AIUM/ESR-compliant PDF report generation.
 
 Public functions:
@@ -31,6 +31,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
     Image,
+    KeepTogether,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -310,6 +311,11 @@ def _strip_markdown(text: str) -> str:
     text = re.sub(r"^[\*\-]\s+", "• ", text, flags=re.MULTILINE)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _ci_bare(ci_str: str) -> str:
+    """Strip '(Hadlock 1984…)' suffix for LLM prompts that already cite Hadlock."""
+    return re.sub(r"\s*\([^)]*Hadlock[^)]*\)", "", ci_str).strip()
 
 
 def _ga_ci_string(ga_weeks: float) -> str:
@@ -592,7 +598,7 @@ def _section_technical_params(story, st, report):
 
     cell = st["body"]
     rows = [
-        [Paragraph("Parameter", cell), Paragraph("Value", cell), Paragraph("Notes", cell)],
+        ["Parameter", "Value", "Notes"],
         [Paragraph("Ultrasound approach", cell), Paragraph(us_approach, cell), Paragraph("", cell)],
         [
             Paragraph("Scanning plane", cell),
@@ -702,7 +708,7 @@ def _section_biometric_findings(story, st, report):
         return Paragraph(t, cell)
 
     rows = [
-        [P("Parameter"), P("AI Measurement"), P("Reference / Notes")],
+        ["Parameter", "AI Measurement", "Reference / Notes"],
         [P("Head Circumference (HC)"), P(f"{hc:.1f} mm" if hc else "—"), P("Calvarium perimeter")],
         [
             P("Estimated Gestational Age (HC)"),
@@ -723,6 +729,21 @@ def _section_biometric_findings(story, st, report):
                 P(f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range"),
             ],
         )
+        # BPD-HC discordance row when both GA estimates are available
+        if bpd_ga_weeks and ga_weeks:
+            disc_days_bpd = abs(round(ga_weeks * 7) - round(bpd_ga_weeks * 7))
+            if disc_days_bpd > 10:
+                rows.append([
+                    P("HC/BPD GA discordance"),
+                    P(_format_weeks_days(disc_days_bpd)),
+                    P(f"{_WARN} >10 days — ISUOG: consider additional biometry or clinical review"),
+                ])
+            else:
+                rows.append([
+                    P("HC/BPD agreement"),
+                    P(_format_weeks_days(disc_days_bpd)),
+                    P("Within 10-day threshold"),
+                ])
     else:
         rows.insert(
             2,
@@ -764,7 +785,7 @@ def _section_biometric_findings(story, st, report):
             return Paragraph(text, cell)
 
         lmp_rows = [
-            [P2("GA Comparison"), P2("Value"), P2("Notes")],
+            ["GA Comparison", "Value", "Notes"],
             [P2("GA from HC"), P2(hc_ga_display), P2("This measurement (Hadlock 1984)")],
             [P2("LMP-derived GA"), P2(lmp_ga_str), P2(f"LMP date: {lmp_val}")],
             [P2("EDD (Naegele's rule)"), P2(edd or "—"), P2("From LMP + 280 days")],
@@ -784,14 +805,19 @@ def _section_biometric_findings(story, st, report):
         lt = Table(lmp_rows, colWidths=lcol_w)
         header_color = _RED if disc_flag else _TEAL
         lt.setStyle(_tbl_style(header_color=header_color))
-        story.append(Spacer(1, 2 * mm))
-        story.append(lt)
+        footnote = Paragraph(
+            "<i>EDD calculated from LMP. If GA discordance exceeds 14 days, "
+            "EDD should be revised based on sonographic dating per ACOG/ISUOG "
+            "guidelines.</i>",
+            st["footnote"],
+        )
+        # KeepTogether prevents mid-table page break on the GA Comparison block.
+        story.append(KeepTogether([Spacer(1, 2 * mm), lt, footnote]))
+    elif not lmp_val:
         story.append(
             Paragraph(
-                "<i>EDD calculated from LMP. If GA discordance exceeds 14 days, "
-                "EDD should be revised based on sonographic dating per ACOG/ISUOG "
-                "guidelines.</i>",
-                st["footnote"],
+                "LMP not provided — GA cross-check not available.",
+                st["bodyI"],
             )
         )
 
@@ -923,10 +949,10 @@ def _section_impression(story, st, narrative_impression, report):
             [
                 ("BACKGROUND", (0, 0), (-1, -1), _IMPRESSION_BG),
                 ("BOX", (0, 0), (-1, -1), 1, _TEAL),
-                ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
             ]
         )
     )
@@ -992,7 +1018,7 @@ def _section_interpretation(story, st, llm, model_name, p1, p2, p3, report, disc
         story.append(Paragraph("<b>DEPLOYMENT CONTEXT</b>", st["label"]))
         story.append(Paragraph(_strip_markdown(p3), st["green"]))
 
-    story.append(Spacer(1, 3 * mm))
+    story.append(Spacer(1, 8))
 
 
 # ── Section 8 — AI System Performance ─────────────────────────────────────────
@@ -1010,7 +1036,7 @@ def _section_ai_performance(story, st, model_name, elapsed_ms):
     # m["dataset"] already begins with "HC18 — …", so just render it directly
     # rather than prefixing another "HC18 — " (was producing "HC18 — HC18 —").
     rows = [
-        [P3("Metric"), P3("Result"), P3("Clinical Reference")],
+        ["Metric", "Result", "Clinical Reference"],
         [P3("Segmentation accuracy (validation cohort)"), P3(m["dice"]), P3(m["dataset"])],
         [P3("Mean measurement deviation"), P3(m["mae"]), P3("ISUOG acceptable threshold: ±3 mm")],
         [
@@ -1040,7 +1066,7 @@ def _section_ai_performance(story, st, model_name, elapsed_ms):
 
 
 def _section_signoff(story, st, signed_meta: dict):
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 6))
     story.append(HRFlowable(width="100%", thickness=1.2, color=_PRUNED, spaceAfter=4))
     story.append(Paragraph("Clinical Sign-off", st["sec"]))
     _section_rule(story)
@@ -1087,7 +1113,7 @@ def _section_signoff(story, st, signed_meta: dict):
 
 
 def _section_regulatory(story, st, ga_weeks=0.0):
-    story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 6))
     story.append(HRFlowable(width="100%", thickness=0.4, color=_BORDER, spaceAfter=3))
     ci_str = _ga_ci_string(ga_weeks)
     story.append(
@@ -1105,7 +1131,7 @@ def _section_regulatory(story, st, ga_weeks=0.0):
         Paragraph(
             "HC18 dataset — Radboud University Medical Center, Nijmegen, Netherlands. "
             "For research and evaluation purposes only. "
-            "System: TemporalFetaSegNet / Fetal Head Clinical AI v3.1 — "
+            "System: TemporalFetaSegNet / Fetal Head Clinical AI v3.2 — "
             "Tarun Sadarla, MS Artificial Intelligence, University of North Texas, 2026. "
             f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
             st["footer"],
@@ -1134,7 +1160,7 @@ def _appendix_technical(story, st, model_name, elapsed_ms):
         return Paragraph(text, cell)
 
     rows = [
-        [Pa("Specification"), Pa("Value")],
+        ["Specification", "Value"],
         [Pa("Model architecture"), Pa(m["short"])],
         [Pa("Parameter count"), Pa(m["params"])],
         [Pa("Computational operations (GMACs)"), Pa(m["flops"])],
@@ -1182,13 +1208,14 @@ def _call_llm(api_key: str, prompt: str, max_tokens: int = 250) -> Optional[str]
 def _llm_static_narrative(hc, ga_str, ga_weeks, trim, gradcam_ok, model_name, elapsed_ms, api_key):
     m = _meta(model_name)
     ci_str = _ga_ci_string(ga_weeks)
+    ci_bare = _ci_bare(ci_str)
 
     p1 = _call_llm(
         api_key,
         (
             "BIOMETRIC ASSESSMENT — write 2-3 sentences maximum.\n\n"
             f"Data: HC = {hc:.1f} mm, GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock 1984. "
-            f"GA confidence interval for this trimester: {ci_str}. "
+            f"GA confidence interval for this trimester: {ci_bare}. "
             f"System mean deviation: {m['mae']} (within ISUOG ±3 mm threshold).\n\n"
             "State: HC value, GA estimate with CI, ISUOG compliance status, and one sentence "
             "on clinical correlation requirement. Do NOT explain the Hadlock nomogram. "
@@ -1248,6 +1275,7 @@ def _llm_cine_narrative(
 ):
     m = _meta(model_name)
     ci_str = _ga_ci_string(ga_weeks)
+    ci_bare = _ci_bare(ci_str)
     rel_desc = "excellent" if rel > 0.97 else "good" if rel > 0.93 else "moderate"
     std_desc = "highly stable" if std < 2.0 else "acceptable" if std < 5.0 else "variable"
 
@@ -1256,7 +1284,7 @@ def _llm_cine_narrative(
         (
             "BIOMETRIC ASSESSMENT — write 2-3 sentences maximum.\n\n"
             f"Data: Consensus HC = {hc:.1f} mm from {n_frames}-frame cine acquisition. "
-            f"GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock 1984. CI: {ci_str}. "
+            f"GA = {ga_str} ({ga_weeks:.1f} weeks) by Hadlock 1984. CI: {ci_bare}. "
             f"Frame concordance: {rel_desc} ({std:.2f} mm inter-frame deviation, {std_desc}). "
             f"System mean deviation: {m['mae']}.\n\n"
             "Cover: HC + GA with CI, frame concordance, ISUOG compliance, clinical correlation "
@@ -1654,7 +1682,7 @@ def _section_temporal_table(story, st, rel, std, n_frames):
         return Paragraph(text, cell)
 
     rows = [
-        [Pt("Parameter"), Pt("Value"), Pt("Clinical Interpretation")],
+        ["Parameter", "Value", "Clinical Interpretation"],
         [Pt("Frames analysed"), Pt(str(n_frames)), Pt("Sequential cine acquisition")],
         [Pt("Inter-frame concordance"), Pt(rel_label), Pt("Consistency across frames")],
         [Pt("Frame-to-frame HC variability"), Pt(f"{std:.2f} mm"), Pt(std_label)],

@@ -69,6 +69,11 @@ if "total_latency_ms" not in st.session_state:
     st.session_state.total_latency_ms = 0.0
 if "load_start"       not in st.session_state:
     st.session_state.load_start       = time.perf_counter()
+# 3-source pixel spacing: DICOM > HC18 CSV > user (default = HC18 median 0.154 mm/px)
+if "ps_input"  not in st.session_state:
+    st.session_state.ps_input  = 0.154
+if "ps_source" not in st.session_state:
+    st.session_state.ps_source = "user"
 
 
 # ── Pseudo-LDDM v2 cine synthesis ─────────────────────────────────────────────
@@ -122,6 +127,44 @@ def frames_to_gif(frames, fps=8):
                     format="GIF", fps=fps, loop=0)
     buf.seek(0)
     return buf.read()
+
+
+# ── pixel spacing helpers (3-source pipeline) ─────────────────────────────────
+
+@st.cache_data
+def _load_hc18_csv() -> dict:
+    """Load filename → pixel spacing from training_set_pixel_size_and_HC.csv."""
+    csv_candidates = [
+        Path(__file__).parent.parent / "training_set_pixel_size_and_HC.csv",
+        Path(__file__).parent / "training_set_pixel_size_and_HC.csv",
+    ]
+    for csv_path in csv_candidates:
+        if csv_path.exists():
+            try:
+                import csv
+                result = {}
+                with open(csv_path) as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        fn = (row.get("filename") or "").strip()
+                        ps = (row.get("pixel size(mm)") or "").strip()
+                        if fn and ps:
+                            result[fn] = float(ps)
+                return result
+            except Exception:
+                pass
+    return {}
+
+
+def _dicom_pixel_spacing(file_bytes: bytes) -> float | None:
+    """Extract pixel spacing from DICOM tag (0028,0030) using pydicom."""
+    try:
+        import pydicom
+        ds = pydicom.dcmread(io.BytesIO(file_bytes))
+        ps = ds.PixelSpacing
+        return float(ps[0])
+    except Exception:
+        return None
 
 
 # ── model loading (cached) ────────────────────────────────────────────────────
@@ -261,12 +304,24 @@ with st.sidebar:
     st.title("⚙️ Settings")
 
     pixel_spacing = st.number_input(
-        "Pixel spacing (mm/pixel)", value=0.070,
-        min_value=0.010, max_value=0.300, step=0.001, format="%.4f",
+        "Pixel spacing (mm/pixel)",
+        min_value=0.010, max_value=0.500, step=0.001, format="%.4f",
+        key="ps_input",
         help="Physical size of one pixel. Found in DICOM tag (0028,0030). "
-             "Typical fetal US: 0.05–0.15 mm/px. "
+             "Default 0.154 mm/px = HC18 dataset median. "
              "Incorrect spacing directly affects HC and GA accuracy.",
     )
+    _ps_source = st.session_state.get("ps_source", "user")
+    if _ps_source == "dicom":
+        st.caption("✅ DICOM-derived — pixel spacing verified from tag (0028,0030)")
+    elif _ps_source == "csv":
+        st.caption("✅ HC18 CSV — spacing from training dataset record")
+    else:
+        if not (0.030 <= pixel_spacing <= 0.500):
+            st.caption(f"⚠️ Value {pixel_spacing:.4f} mm/px is outside typical range (0.030–0.500)")
+        else:
+            st.caption("⚠️ User-supplied pixel spacing — verify before clinical use")
+
     pixel_spacing_confirmed = st.checkbox(
         "I confirm the pixel spacing matches the DICOM tag (0028,0030)",
         value=False,
@@ -276,7 +331,7 @@ with st.sidebar:
         ),
         key="pixel_spacing_confirmed",
     )
-    if not pixel_spacing_confirmed:
+    if _ps_source == "user" and not pixel_spacing_confirmed:
         st.caption(
             "⚠️ Confirm pixel spacing above before generating a clinical report."
         )
@@ -400,6 +455,7 @@ with tab_static:
         horizontal=True, key="mode_s",
     )
 
+    _hc18_csv = _load_hc18_csv()
     img_gray = None
     if input_mode_s == "Use demo subject" and demo_subjects:
         selected_demo_s = st.selectbox(
@@ -407,15 +463,33 @@ with tab_static:
             format_func=lambda x: x.replace(".png", "").replace("_", " "),
             key="demo_s",
         )
+        _csv_ps = _hc18_csv.get(selected_demo_s)
+        if _csv_ps:
+            _col_a, _col_b = st.columns([3, 1])
+            _col_a.caption(f"HC18 CSV pixel spacing for this image: **{_csv_ps:.4f} mm/px**")
+            if _col_b.button("Apply", key="apply_csv_s"):
+                st.session_state.ps_input = _csv_ps
+                st.session_state.ps_source = "csv"
+                st.rerun()
         if st.button("Run analysis on demo subject", key="run_demo_s"):
             img_gray = load_demo_image(selected_demo_s)
     else:
         uploaded_s = st.file_uploader(
-            "Upload ultrasound image (PNG or JPG)",
-            type=["png", "jpg", "jpeg"], key="sf",
+            "Upload ultrasound image (PNG or JPG, or .dcm DICOM)",
+            type=["png", "jpg", "jpeg", "dcm"], key="sf",
         )
         if uploaded_s:
-            img_gray = np.array(Image.open(uploaded_s).convert("L"))
+            _raw = uploaded_s.read()
+            if uploaded_s.name.lower().endswith(".dcm"):
+                _dicom_ps = _dicom_pixel_spacing(_raw)
+                if _dicom_ps:
+                    st.session_state.ps_input = _dicom_ps
+                    st.session_state.ps_source = "dicom"
+                    st.info(f"DICOM pixel spacing extracted: **{_dicom_ps:.4f} mm/px** ✅")
+                img_gray = np.array(Image.open(io.BytesIO(_raw)).convert("L"))
+            else:
+                st.session_state.ps_source = "user"
+                img_gray = np.array(Image.open(io.BytesIO(_raw)).convert("L"))
 
     if img_gray is not None:
 
@@ -463,11 +537,20 @@ with tab_static:
             render_gt_section(result_s, pixel_spacing, key_prefix="static")
             st.markdown("---")
 
-            if not pixel_spacing_confirmed:
+            _ps_src_s = st.session_state.get("ps_source", "user")
+            _needs_confirm_s = _ps_src_s == "user" and not pixel_spacing_confirmed
+            if _needs_confirm_s:
                 st.warning(
                     "Confirm pixel spacing in the sidebar before generating a clinical report."
                 )
             else:
+                _hc_s = result_s.get("hc_mm")
+                _ga_s = result_s.get("ga_str") or "—"
+                if _hc_s:
+                    st.caption(
+                        f"This report will record: HC **{_hc_s:.1f} mm** · GA **{_ga_s}** — "
+                        "verify before clinical use."
+                    )
                 with st.spinner("Generating clinical report..."):
                     pdf = generate_static_report(
                         result_s, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
@@ -541,6 +624,7 @@ with tab_cine:
         horizontal=True, key="mode_c",
     )
 
+    _hc18_csv_c = _load_hc18_csv()
     img_gray_c = None
     if input_mode_c == "Use demo subject" and demo_subjects_c:
         selected_demo_c = st.selectbox(
@@ -548,15 +632,33 @@ with tab_cine:
             format_func=lambda x: x.replace(".png", "").replace("_", " "),
             key="demo_c",
         )
+        _csv_ps_c = _hc18_csv_c.get(selected_demo_c)
+        if _csv_ps_c:
+            _col_ca, _col_cb = st.columns([3, 1])
+            _col_ca.caption(f"HC18 CSV pixel spacing for this image: **{_csv_ps_c:.4f} mm/px**")
+            if _col_cb.button("Apply", key="apply_csv_c"):
+                st.session_state.ps_input = _csv_ps_c
+                st.session_state.ps_source = "csv"
+                st.rerun()
         if st.button("Run cine analysis on demo subject", key="run_demo_c"):
             img_gray_c = load_demo_image(selected_demo_c)
     else:
         uploaded_c = st.file_uploader(
-            "Upload ultrasound image (PNG or JPG)",
-            type=["png", "jpg", "jpeg"], key="cine",
+            "Upload ultrasound image (PNG or JPG, or .dcm DICOM)",
+            type=["png", "jpg", "jpeg", "dcm"], key="cine",
         )
         if uploaded_c:
-            img_gray_c = np.array(Image.open(uploaded_c).convert("L"))
+            _raw_c = uploaded_c.read()
+            if uploaded_c.name.lower().endswith(".dcm"):
+                _dicom_ps_c = _dicom_pixel_spacing(_raw_c)
+                if _dicom_ps_c:
+                    st.session_state.ps_input = _dicom_ps_c
+                    st.session_state.ps_source = "dicom"
+                    st.info(f"DICOM pixel spacing extracted: **{_dicom_ps_c:.4f} mm/px** ✅")
+                img_gray_c = np.array(Image.open(io.BytesIO(_raw_c)).convert("L"))
+            else:
+                st.session_state.ps_source = "user"
+                img_gray_c = np.array(Image.open(io.BytesIO(_raw_c)).convert("L"))
 
     if img_gray_c is not None:
 
@@ -638,11 +740,20 @@ with tab_cine:
             render_gt_section(result_c, pixel_spacing, key_prefix="cine")
             st.markdown("---")
 
-            if not pixel_spacing_confirmed:
+            _ps_src_c = st.session_state.get("ps_source", "user")
+            _needs_confirm_c = _ps_src_c == "user" and not pixel_spacing_confirmed
+            if _needs_confirm_c:
                 st.warning(
                     "Confirm pixel spacing in the sidebar before generating a clinical report."
                 )
             else:
+                _hc_c = result_c.get("hc_mm")
+                _ga_c = result_c.get("ga_str") or "—"
+                if _hc_c:
+                    st.caption(
+                        f"This report will record: HC **{_hc_c:.1f} mm** · GA **{_ga_c}** — "
+                        "verify before clinical use."
+                    )
                 with st.spinner("Generating clinical report..."):
                     pdf_c = generate_cine_report(
                         result_c, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
