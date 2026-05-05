@@ -271,3 +271,49 @@ def test_list_reports_for_patient_empty_for_unknown_id(client):
     resp = client.get("/patients/MRN-NOT-A-REAL-PATIENT/reports")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# ── 8.2  Demo seed ───────────────────────────────────────────────────────────
+
+
+def test_demo_seed_inserts_ten_reports():
+    """seed_demo_reports() inserts exactly ten reports the first time and
+    is a no-op on a second call (idempotent)."""
+    from app.api import demo_seed, reports_db
+
+    n_first = demo_seed.seed_demo_reports()
+    assert n_first == 10
+    n_second = demo_seed.seed_demo_reports()
+    assert n_second == 0
+
+    # All ten study IDs are populated
+    for i in range(1, 11):
+        sid = f"demo-{i:03d}"
+        rows = reports_db.list_reports_for_study(sid)
+        assert len(rows) == 1
+
+
+def test_demo_seed_includes_three_abnormal_cases():
+    """The three abnormal cases (microcephaly / macrocephaly / IUGR) must
+    end up well outside the population HC norm so the report flags fire."""
+    from app.api import demo_seed, reports_db
+    from app.inference import hadlock_ga
+
+    demo_seed.seed_demo_reports()
+
+    abnormal_ids = ["demo-002", "demo-005", "demo-008"]
+    flagged = 0
+    for sid in abnormal_ids:
+        rep = reports_db.list_reports_for_study(sid)[0]
+        assert rep.hc_mm is not None
+        assert rep.ga_weeks is not None
+        # Population mean HC for this GA via inverse Hadlock — same logic
+        # the demo seed uses to position the abnormal points.
+        ga_at_mean, _ = hadlock_ga(rep.hc_mm)
+        delta_weeks = abs(ga_at_mean - rep.ga_weeks)
+        # Abnormal cases should be >1.5 weeks off the mean curve. IUGR cases
+        # (mildest of the three) sit at HC <10th percentile ≈ -1.3 SD, which
+        # corresponds to ~2 weeks of GA delta — micro/macrocephaly are more.
+        assert delta_weeks > 1.5, f"{sid} only {delta_weeks:.2f} wk off mean"
+        flagged += 1
+    assert flagged == 3

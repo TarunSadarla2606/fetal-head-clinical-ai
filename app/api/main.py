@@ -112,6 +112,22 @@ app.add_middleware(
 reports_db.init_db()
 app.include_router(reports_endpoints.router)
 
+# Demo seed (Batch 8.2) — idempotently insert 10 fabricated patient reports
+# so reviewers see a populated Reports tab on first open. Off by default;
+# set DEMO_SEED=1 in the deployment environment to enable. Idempotent:
+# skips any study_id that already has a report.
+import os as _os  # noqa: E402
+
+if _os.environ.get("DEMO_SEED") == "1":
+    from . import demo_seed
+
+    try:
+        n_seeded = demo_seed.seed_demo_reports()
+        if n_seeded:
+            log.info("Demo seed: inserted %d demo reports", n_seeded)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Demo seed failed: %s", exc)
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────
 def _decode_upload(data: bytes) -> np.ndarray:
