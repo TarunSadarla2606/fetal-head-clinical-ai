@@ -26,14 +26,13 @@ Storage
 from __future__ import annotations
 
 import base64
+import json
 import os
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import Response
-
-import json
 
 from app.report import (
     generate_cine_report,
@@ -448,13 +447,17 @@ def create_combined_report_endpoint(
 
     # Compute consensus for the persisted summary fields
     from app.report import _consensus_from_results
+
     consensus = _consensus_from_results(per_model)
 
     # Strip image blobs out of the persisted JSON to keep the row compact —
     # the PDF renderer re-fetches images from findings_store at render time.
     persisted_models = [
-        {k: v for k, v in m.items()
-         if k not in ("original_image_b64", "overlay_image_b64", "gradcam_image_b64")}
+        {
+            k: v
+            for k, v in m.items()
+            if k not in ("original_image_b64", "overlay_image_b64", "gradcam_image_b64")
+        }
         for m in per_model
     ]
 
