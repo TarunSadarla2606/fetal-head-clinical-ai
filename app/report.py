@@ -59,8 +59,10 @@ _PAGE_W = A4[0]
 _MARGIN_PT = 50
 _CONTENT_W = _PAGE_W - 2 * _MARGIN_PT  # 495pt
 
-# Status text fragments — use ⚠ (U+26A0), never ■ (causes glyph fallback issues)
-_WARN = "⚠"
+# Status text fragments — use plain ASCII "[!]" so it renders in Helvetica
+# (the ReportLab default font); the Unicode ⚠ glyph (U+26A0) and ■ (U+25A0)
+# both fall back to the missing-glyph box in standard Helvetica.
+_WARN = "[!]"
 
 
 # ── Model metadata ─────────────────────────────────────────────────────────────
@@ -753,17 +755,21 @@ def _section_biometric_findings(story, st, report):
             disc_days_bpd = abs(round(ga_weeks * 7) - round(bpd_ga_weeks * 7))
             disc_disp = _format_weeks_days(disc_days_bpd)
             if disc_days_bpd > 10:
-                rows.append([
-                    P("HC/BPD GA discordance"),
-                    P(disc_disp),
-                    P(f"{_WARN} {disc_disp} discordance — clinical review recommended"),
-                ])
+                rows.append(
+                    [
+                        P("HC/BPD GA discordance"),
+                        P(disc_disp),
+                        P(f"{_WARN} {disc_disp} discordance — clinical review recommended"),
+                    ]
+                )
             else:
-                rows.append([
-                    P("HC/BPD agreement"),
-                    P(disc_disp),
-                    P(f"Within 10-day threshold ({disc_disp} agreement)"),
-                ])
+                rows.append(
+                    [
+                        P("HC/BPD agreement"),
+                        P(disc_disp),
+                        P(f"Within 10-day threshold ({disc_disp} agreement)"),
+                    ]
+                )
     else:
         rows.insert(
             2,
@@ -1075,13 +1081,26 @@ def _section_ai_performance(story, st, model_name, elapsed_ms):
     ]
     if elapsed_ms:
         rows.append(
-            [P3("Inference runtime (this image)"), P3(f"{elapsed_ms:.0f} ms"), P3("CPU inference")]
+            [
+                P3("Forward-pass wall time (this run)"),
+                P3(f"{elapsed_ms:.0f} ms"),
+                P3("Single-shot CPU measurement"),
+            ]
         )
 
     col_w = [180, 120, 195]
     t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
+    if elapsed_ms:
+        story.append(
+            Paragraph(
+                "<i>Forward-pass time is a single-run wall-clock measurement on a "
+                "shared CPU container; expect ±20% run-to-run variance. Reported "
+                "Dice / MAE come from a 199-image held-out HC18 cohort.</i>",
+                st["footnote"],
+            )
+        )
     story.append(Spacer(1, 2 * mm))
 
 
@@ -1165,18 +1184,13 @@ def _section_regulatory(story, st, ga_weeks=0.0):
 # ── Appendix — Technical details ───────────────────────────────────────────────
 
 
-def _appendix_technical(story, st, model_name, elapsed_ms):
+def _appendix_specs_table(story, st, model_name, elapsed_ms):
+    """Render just the per-model specifications table (no PageBreak, no header).
+
+    Used both by the single-model appendix and the combined report's
+    per-model appendix entries.
+    """
     m = _meta(model_name)
-    story.append(PageBreak())
-    story.append(Paragraph("Appendix A — AI Model Technical Specifications", st["sec"]))
-    _section_rule(story)
-    story.append(
-        Paragraph(
-            "The following technical metrics are provided for AI/ML validation teams and "
-            "clinical engineering committees. They are not relevant to routine clinical reporting.",
-            st["bodyI"],
-        )
-    )
     cell = st["body"]
 
     def Pa(text):
@@ -1190,12 +1204,52 @@ def _appendix_technical(story, st, model_name, elapsed_ms):
         [Pa("Compression vs baseline"), Pa(m["compression"] or "N/A (baseline)")],
         [Pa("Training dataset"), Pa("HC18 (1334 images, Radboud UMC)")],
         [Pa("Validation dataset"), Pa(m["dataset"])],
-        [Pa("Runtime on CPU"), Pa(f"{elapsed_ms:.0f} ms" if elapsed_ms else "—")],
+        [
+            Pa("Forward-pass wall time (this run)"),
+            Pa(f"{elapsed_ms:.0f} ms" if elapsed_ms else "—"),
+        ],
     ]
     col_w = [220, 275]
     t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
+
+
+def _appendix_technical(story, st, model_name, elapsed_ms):
+    """Single-model Appendix A. Adds its own PageBreak + section header."""
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix A — AI Model Technical Specifications", st["sec"]))
+    _section_rule(story)
+    story.append(
+        Paragraph(
+            "The following technical metrics are provided for AI/ML validation teams and "
+            "clinical engineering committees. They are not relevant to routine clinical reporting.",
+            st["bodyI"],
+        )
+    )
+    _appendix_specs_table(story, st, model_name, elapsed_ms)
+
+
+def _appendix_combined_technical(story, st, results):
+    """Combined-report Appendix A — one specs table per selected model on a
+    single appendix page (or two, if content overflows). No interior page
+    breaks between models, so no blank pages."""
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix A — Per-Model Technical Specifications", st["sec"]))
+    _section_rule(story)
+    story.append(
+        Paragraph(
+            "Per-model technical metrics for each variant included in this combined "
+            "report. Provided for AI/ML validation teams and clinical engineering "
+            "committees; not relevant to routine clinical reporting.",
+            st["bodyI"],
+        )
+    )
+    for r in results:
+        name = r.get("model_name") or r.get("model", "—")
+        story.append(Spacer(1, 3 * mm))
+        story.append(Paragraph(f"<b>{name}</b>", st["body"]))
+        _appendix_specs_table(story, st, name, r.get("elapsed_ms") or 0.0)
 
 
 # ── LLM narrative functions ────────────────────────────────────────────────────
@@ -1649,9 +1703,9 @@ def _build_story(
 
     _section_regulatory(story, st, ga_weeks=ga_weeks)
 
-    # ─── PAGE 5: Appendix A (only when compressed model used) ────────────────
-    if m["pruned"]:
-        _appendix_technical(story, st, model_name, elapsed)
+    # ─── PAGE 5: Appendix A — always rendered. Specs table content adapts
+    # to baseline vs compressed via _meta(), so it's useful for every model.
+    _appendix_technical(story, st, model_name, elapsed)
 
     return story
 
@@ -1670,9 +1724,7 @@ class _BiometricProxy:
         self.pixel_spacing_dicom_derived = getattr(report, "pixel_spacing_dicom_derived", False)
         # 3-state source — overrides legacy bool when set
         self.pixel_spacing_source = (
-            ps_source
-            if ps_source is not None
-            else getattr(report, "pixel_spacing_source", None)
+            ps_source if ps_source is not None else getattr(report, "pixel_spacing_source", None)
         )
         self.bpd_mm = getattr(report, "bpd_mm", None)
         self.fetal_presentation = getattr(report, "fetal_presentation", None)
@@ -2021,7 +2073,13 @@ def generate_comparison_report(
             "Phase 4b ✂\nExpress",
         ],
         ["Model-only inference¹", _ms(ms_p0), _ms(ms_p4a), _ms(ms_p2), _ms(ms_p4b)],
-        ["Speedup vs Standard", "1.00× (ref)", _speed(ms_p0, ms_p4a), "1.00× (ref)", _speed(ms_p2, ms_p4b)],
+        [
+            "Speedup vs Standard",
+            "1.00× (ref)",
+            _speed(ms_p0, ms_p4a),
+            "1.00× (ref)",
+            _speed(ms_p2, ms_p4b),
+        ],
         ["Throughput (CPU)", _thr(ms_p0), _thr(ms_p4a), _thr(ms_p2), _thr(ms_p4b)],
         ["Parameters", m0["params"], m4a["params"], m2["params"], m4b["params"]],
         [
@@ -2161,14 +2219,21 @@ def _consensus_from_results(results: list[dict]) -> dict:
     the HC mean rather than averaging GA strings). Confidence is the most
     conservative label across models. Reliability is the mean.
     """
-    from app.inference import classify_trimester, hadlock_ga as _hadlock
+    from app.inference import classify_trimester
+    from app.inference import hadlock_ga as _hadlock
 
     hc_values = [r.get("hc_mm") for r in results if r.get("hc_mm")]
     if not hc_values:
         return {
-            "hc_mm": 0.0, "hc_std_mm": 0.0, "ga_weeks": 0.0, "ga_str": "—",
-            "trimester": "—", "confidence_label": "—", "reliability": 0.0,
-            "elapsed_total_ms": 0.0, "outliers": [],
+            "hc_mm": 0.0,
+            "hc_std_mm": 0.0,
+            "ga_weeks": 0.0,
+            "ga_str": "—",
+            "trimester": "—",
+            "confidence_label": "—",
+            "reliability": 0.0,
+            "elapsed_total_ms": 0.0,
+            "outliers": [],
         }
     hc_mean = sum(hc_values) / len(hc_values)
     hc_std = (sum((h - hc_mean) ** 2 for h in hc_values) / len(hc_values)) ** 0.5
@@ -2212,19 +2277,31 @@ def _section_combined_comparison(story, st, results, consensus, report, pixel_sp
 
     # Pixel-spacing warning banner (same logic as _section_biometric_findings)
     src = pixel_spacing_source or _ps_source(report)
-    ps_mm = (getattr(report, "pixel_spacing_mm", None) or 0.070)
+    ps_mm = getattr(report, "pixel_spacing_mm", None) or 0.070
     if src == "USER":
-        warn_data = [[Paragraph(
-            f"<b>{_WARN} WARNING:</b> Pixel spacing ({ps_mm:.4f} mm/pixel) is "
-            "estimated, not DICOM-verified. HC measurement may be inaccurate. "
-            "Verify pixel spacing before clinical use.", st["warn_bold"])]]
+        warn_data = [
+            [
+                Paragraph(
+                    f"<b>{_WARN} WARNING:</b> Pixel spacing ({ps_mm:.4f} mm/pixel) is "
+                    "estimated, not DICOM-verified. HC measurement may be inaccurate. "
+                    "Verify pixel spacing before clinical use.",
+                    st["warn_bold"],
+                )
+            ]
+        ]
         warn_tbl = Table(warn_data, colWidths=[_CONTENT_W])
-        warn_tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), _AMBER_BG),
-            ("BOX", (0, 0), (-1, -1), 1, _AMBER_BORDER),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-            ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ]))
+        warn_tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), _AMBER_BG),
+                    ("BOX", (0, 0), (-1, -1), 1, _AMBER_BORDER),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
         story.append(warn_tbl)
         story.append(Spacer(1, 3 * mm))
 
@@ -2234,8 +2311,10 @@ def _section_combined_comparison(story, st, results, consensus, report, pixel_sp
         return Paragraph(t, cell)
 
     # Build header row: Parameter | Model 1 | Model 2 | … | Consensus
-    short_label = lambda r: (r.get("model_name") or r.get("model", "—")).split("—")[0].strip() \
-        or r.get("model_name") or r.get("model", "—")
+    def short_label(r):
+        full = r.get("model_name") or r.get("model", "—")
+        return full.split("—")[0].strip() or full
+
     header = ["Parameter"] + [short_label(r) for r in results] + ["Consensus"]
 
     def fmt_hc(v):
@@ -2284,8 +2363,7 @@ def _section_combined_lmp_block(story, st, consensus, report):
     ga_weeks = consensus["ga_weeks"]
     if not lmp_val or not ga_weeks:
         if not lmp_val:
-            story.append(Paragraph(
-                "LMP not provided — GA cross-check not available.", st["bodyI"]))
+            story.append(Paragraph("LMP not provided — GA cross-check not available.", st["bodyI"]))
         return
 
     edd = _calculate_edd(lmp_val)
@@ -2310,12 +2388,19 @@ def _section_combined_lmp_block(story, st, consensus, report):
 
     lmp_rows = [
         ["GA Comparison", "Value", "Notes"],
-        [P2("GA from HC (consensus)"), P2(hc_ga_display), P2("Multi-model consensus (Hadlock 1984)")],
+        [
+            P2("GA from HC (consensus)"),
+            P2(hc_ga_display),
+            P2("Multi-model consensus (Hadlock 1984)"),
+        ],
         [P2("LMP-derived GA"), P2(lmp_ga_str), P2(f"LMP date: {lmp_val}")],
         [P2("EDD (Naegele's rule)"), P2(edd or "—"), P2("From LMP + 280 days")],
         [P2("Discordance (HC vs LMP)"), P2(disc_str), P2(disc_notes)],
-        [P2("Summary"), P2(""),
-         P2(f"LMP GA: {lmp_ga_str}  |  Consensus HC GA: {hc_ga_display}  |  EDD: {edd or '—'}")],
+        [
+            P2("Summary"),
+            P2(""),
+            P2(f"LMP GA: {lmp_ga_str}  |  Consensus HC GA: {hc_ga_display}  |  EDD: {edd or '—'}"),
+        ],
     ]
     prior = getattr(report, "prior_biometry", None)
     if prior:
@@ -2327,10 +2412,14 @@ def _section_combined_lmp_block(story, st, consensus, report):
     lt.setStyle(_tbl_style(header_color=header_color))
     story.append(Spacer(1, 2 * mm))
     story.append(lt)
-    story.append(Paragraph(
-        "<i>EDD calculated from LMP. If GA discordance exceeds 14 days, "
-        "EDD should be revised based on sonographic dating per ACOG/ISUOG "
-        "guidelines.</i>", st["footnote"]))
+    story.append(
+        Paragraph(
+            "<i>EDD calculated from LMP. If GA discordance exceeds 14 days, "
+            "EDD should be revised based on sonographic dating per ACOG/ISUOG "
+            "guidelines.</i>",
+            st["footnote"],
+        )
+    )
 
 
 def _section_combined_images(story, st, results):
@@ -2342,14 +2431,17 @@ def _section_combined_images(story, st, results):
     panel_h = 38 * mm  # smaller than single-model (52mm) so 4 rows fit on one page
 
     def _placeholder(label):
-        ph = Table([[Paragraph(label, st["img_cap"])]],
-                   colWidths=[panel_w], rowHeights=[panel_h])
-        ph.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#E5E7EB")),
-            ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOX", (0, 0), (-1, -1), 0.3, _BORDER),
-        ]))
+        ph = Table([[Paragraph(label, st["img_cap"])]], colWidths=[panel_w], rowHeights=[panel_h])
+        ph.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#E5E7EB")),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOX", (0, 0), (-1, -1), 0.3, _BORDER),
+                ]
+            )
+        )
         return ph
 
     def _panel(b64, label):
@@ -2368,23 +2460,36 @@ def _section_combined_images(story, st, results):
             _panel(r.get("gradcam_image_b64"), "Grad-CAM\nunavailable"),
         ]
         img_row = Table([cells], colWidths=[panel_w] * 3, rowHeights=[panel_h])
-        img_row.setStyle(TableStyle([
-            ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 2),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-        ]))
+        img_row.setStyle(
+            TableStyle(
+                [
+                    ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
         story.append(img_row)
-        cap_row = Table([[
-            Paragraph("Original", st["img_cap"]),
-            Paragraph("Overlay", st["img_cap"]),
-            Paragraph("Grad-CAM++", st["img_cap"]),
-        ]], colWidths=[panel_w] * 3)
-        cap_row.setStyle(TableStyle([
-            ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 1),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
+        cap_row = Table(
+            [
+                [
+                    Paragraph("Original", st["img_cap"]),
+                    Paragraph("Overlay", st["img_cap"]),
+                    Paragraph("Grad-CAM++", st["img_cap"]),
+                ]
+            ],
+            colWidths=[panel_w] * 3,
+        )
+        cap_row.setStyle(
+            TableStyle(
+                [
+                    ("ALIGN", (0, 0), (-1, -1), "CENTRE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 1),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
         story.append(cap_row)
         story.append(Spacer(1, 2 * mm))
 
@@ -2407,27 +2512,43 @@ def _section_combined_agreement(story, st, results, consensus):
 
     rows = [
         ["Metric", "Value", "Clinical Interpretation"],
-        [P("Models compared"), P(str(len(results))),
-         P("Multi-model parallel inference on the same image")],
-        [P("HC range across models"), P(f"{hc_min:.1f} – {hc_max:.1f} mm"),
-         P(f"Spread = {hc_range:.1f} mm")],
-        [P("HC standard deviation"), P(f"{consensus['hc_std_mm']:.2f} mm"),
-         P("Lower = stronger inter-model agreement")],
-        [P("Consensus HC"), P(f"{consensus['hc_mm']:.1f} mm"),
-         P("Mean across models — used for downstream GA / impression")],
+        [
+            P("Models compared"),
+            P(str(len(results))),
+            P("Multi-model parallel inference on the same image"),
+        ],
+        [
+            P("HC range across models"),
+            P(f"{hc_min:.1f} – {hc_max:.1f} mm"),
+            P(f"Spread = {hc_range:.1f} mm"),
+        ],
+        [
+            P("HC standard deviation"),
+            P(f"{consensus['hc_std_mm']:.2f} mm"),
+            P("Lower = stronger inter-model agreement"),
+        ],
+        [
+            P("Consensus HC"),
+            P(f"{consensus['hc_mm']:.1f} mm"),
+            P("Mean across models — used for downstream GA / impression"),
+        ],
     ]
     if outliers:
-        rows.append([
-            P(f"{_WARN} Outliers >5 mm from consensus"),
-            P(f"{len(outliers)} model{'s' if len(outliers) != 1 else ''}"),
-            P(f"Review: {', '.join(outliers)}"),
-        ])
+        rows.append(
+            [
+                P(f"{_WARN} Outliers >5 mm from consensus"),
+                P(f"{len(outliers)} model{'s' if len(outliers) != 1 else ''}"),
+                P(f"Review: {', '.join(outliers)}"),
+            ]
+        )
     else:
-        rows.append([
-            P("Outlier check (>5 mm from consensus)"),
-            P("None"),
-            P("All models agree within ±5 mm"),
-        ])
+        rows.append(
+            [
+                P("Outlier check (>5 mm from consensus)"),
+                P("None"),
+                P("All models agree within ±5 mm"),
+            ]
+        )
 
     col_w = [150, 120, 225]
     t = Table(rows, colWidths=col_w)
@@ -2449,29 +2570,36 @@ def _section_combined_performance(story, st, results):
     def P(t):
         return Paragraph(t, cell)
 
-    rows = [["Model", "Params", "FLOPs", "Reported Dice", "Reported MAE", "ISUOG", "Runtime"]]
+    rows = [["Model", "Params", "FLOPs", "Reported Dice", "Reported MAE", "ISUOG", "Forward-pass"]]
     for r in results:
         name = r.get("model_name") or r.get("model", "—")
         m = _meta(name)
-        rows.append([
-            P(m.get("short", name)),
-            P(m["params"]),
-            P(m["flops"]),
-            P(m["dice"]),
-            P(m["mae"]),
-            P(f"✓ {m['isuog']}"),
-            P(f"{(r.get('elapsed_ms') or 0):.0f} ms"),
-        ])
+        rows.append(
+            [
+                P(m.get("short", name)),
+                P(m["params"]),
+                P(m["flops"]),
+                P(m["dice"]),
+                P(m["mae"]),
+                P(f"✓ {m['isuog']}"),
+                P(f"{(r.get('elapsed_ms') or 0):.0f} ms"),
+            ]
+        )
     # Tighter columns to fit 7
     col_w = [110, 50, 70, 75, 75, 50, 65]
     t = Table(rows, colWidths=col_w)
     t.setStyle(_tbl_style())
     story.append(t)
-    story.append(Paragraph(
-        "<i>Reported metrics from the HC18 (199-image) held-out test cohort. "
-        "Runtime measured on the inference server for this study.</i>",
-        st["footnote"],
-    ))
+    story.append(
+        Paragraph(
+            "<i>Reported Dice / MAE / ISUOG from the HC18 (199-image) held-out test "
+            "cohort. Forward-pass column is a single-run wall-clock measurement on a "
+            "shared CPU container — expect ±20% run-to-run variance, and CPU run "
+            "scheduling can occasionally make a smaller (compressed) model slower "
+            "than the baseline on a given trial.</i>",
+            st["footnote"],
+        )
+    )
     story.append(Spacer(1, 2 * mm))
 
 
@@ -2506,9 +2634,12 @@ def generate_combined_report(
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=14 * mm, bottomMargin=14 * mm,
-        leftMargin=_MARGIN_PT, rightMargin=_MARGIN_PT,
+        buf,
+        pagesize=A4,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+        leftMargin=_MARGIN_PT,
+        rightMargin=_MARGIN_PT,
     )
 
     llm = use_llm and bool(api_key)
@@ -2530,12 +2661,15 @@ def generate_combined_report(
 
     # ─── PAGE 1: Header + Patient + Indication + Technical ─────────────
     _section_header(
-        story, st,
+        story,
+        st,
         f"Combined Multi-Model Report ({n_models} models)",
         effective_llm,
         consensus["elapsed_total_ms"],
-        accession, stored_mode,
-        ood_flag=ood_flag, hc_only=hc_only,
+        accession,
+        stored_mode,
+        ood_flag=ood_flag,
+        hc_only=hc_only,
     )
     if report is not None:
         _section_patient_exam(story, st, report)
@@ -2544,10 +2678,13 @@ def generate_combined_report(
     else:
         story.append(Paragraph("Patient &amp; Exam Information", st["sec"]))
         _section_rule(story)
-        story.append(Paragraph(
-            f"Pixel spacing: {pixel_spacing:.4f} mm/pixel  |  "
-            f"Models: {', '.join(model_names)}  |  Analysis: COMBINED",
-            st["bodyI"]))
+        story.append(
+            Paragraph(
+                f"Pixel spacing: {pixel_spacing:.4f} mm/pixel  |  "
+                f"Models: {', '.join(model_names)}  |  Analysis: COMBINED",
+                st["bodyI"],
+            )
+        )
         story.append(Spacer(1, 2 * mm))
 
     # ─── PAGE 2: Multi-model biometric comparison + LMP cross-check ────
@@ -2565,8 +2702,9 @@ def generate_combined_report(
     if narrative is not None and len(narrative) >= 4:
         p1, p2, p3, p_impression = narrative[0], narrative[1], narrative[2], narrative[3]
     else:
-        p1 = _rule_static_p1(consensus["hc_mm"], consensus["ga_str"],
-                             consensus["ga_weeks"], consensus["trimester"])
+        p1 = _rule_static_p1(
+            consensus["hc_mm"], consensus["ga_str"], consensus["ga_weeks"], consensus["trimester"]
+        )
         p2 = (
             f"Consensus from {n_models} models: HC mean = {consensus['hc_mm']:.1f} ± "
             f"{consensus['hc_std_mm']:.2f} mm; reliability = {consensus['reliability']:.2f}; "
@@ -2575,13 +2713,18 @@ def generate_combined_report(
         if consensus["outliers"]:
             p2 += f" Note: {len(consensus['outliers'])} model(s) >5 mm from consensus mean."
         p3 = "Models compared: " + ", ".join(model_names) + "."
-        p_impression = _rule_impression(consensus["hc_mm"], consensus["ga_str"],
-                                        consensus["ga_weeks"], consensus["trimester"])
+        p_impression = _rule_impression(
+            consensus["hc_mm"], consensus["ga_str"], consensus["ga_weeks"], consensus["trimester"]
+        )
 
     consensus_proxy = _BiometricProxy(
-        consensus["hc_mm"], consensus["ga_str"], consensus["ga_weeks"],
-        consensus["trimester"], consensus["confidence_label"],
-        report, pixel_spacing_source,
+        consensus["hc_mm"],
+        consensus["ga_str"],
+        consensus["ga_weeks"],
+        consensus["trimester"],
+        consensus["confidence_label"],
+        report,
+        pixel_spacing_source,
     )
     _section_impression(story, st, p_impression, consensus_proxy)
     discordance_note = _discordance_recommendation(
@@ -2589,8 +2732,15 @@ def generate_combined_report(
         consensus["ga_weeks"],
     )
     _section_interpretation(
-        story, st, effective_llm, "Combined Multi-Model",
-        p1, p2, p3, report, discordance_note=discordance_note,
+        story,
+        st,
+        effective_llm,
+        "Combined Multi-Model",
+        p1,
+        p2,
+        p3,
+        report,
+        discordance_note=discordance_note,
     )
 
     # ─── PAGE 4: Per-model performance + Sign-off + Regulatory ─────────
@@ -2600,15 +2750,10 @@ def generate_combined_report(
         _section_signoff(story, st, signed_meta)
     _section_regulatory(story, st, ga_weeks=consensus["ga_weeks"])
 
-    # ─── PAGE 5: Per-compressed-model technical appendix ───────────────
-    appendix_added = False
-    for r in results:
-        name = r.get("model_name") or r.get("model", "—")
-        if _meta(name).get("pruned"):
-            if not appendix_added:
-                story.append(PageBreak())
-                appendix_added = True
-            _appendix_technical(story, st, name, r.get("elapsed_ms") or 0.0)
+    # ─── PAGE 5: Appendix A — per-model technical specs for every selected
+    # model (baseline + compressed). Single PageBreak inside the helper,
+    # then all model tables stack on shared pages — no blank pages.
+    _appendix_combined_technical(story, st, results)
 
     if draft:
         doc.build(story, onFirstPage=_draw_draft_watermark, onLaterPages=_draw_draft_watermark)
