@@ -31,7 +31,9 @@ jobs:
             tests/test_api_auth.py \
             tests/test_api_infer_mock.py \
             tests/test_api_xai.py \
-            tests/test_api_reports.py
+            tests/test_api_reports.py \
+            tests/test_model_manager_unit.py \
+            tests/test_shapes.py
       - name: Ruff format check (API + new tests)
         run: |
           ruff format --check \
@@ -42,7 +44,9 @@ jobs:
             tests/test_api_auth.py \
             tests/test_api_infer_mock.py \
             tests/test_api_xai.py \
-            tests/test_api_reports.py
+            tests/test_api_reports.py \
+            tests/test_model_manager_unit.py \
+            tests/test_shapes.py
 
   test:
     name: Tests (Python 3.11)

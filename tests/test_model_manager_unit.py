@@ -1,7 +1,6 @@
 """Unit tests for model_manager: cache, auto-detection, available_variants."""
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
