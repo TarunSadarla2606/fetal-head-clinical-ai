@@ -500,6 +500,17 @@ def list_reports_for_study(study_id: str, db_path: str | None = None) -> list[Re
     return [_row_to_report(r) for r in rows]
 
 
+def list_reports_for_patient(patient_id: str, db_path: str | None = None) -> list[Report]:
+    """All reports for a given MRN / patient_id, oldest study_date first
+    (for longitudinal growth-chart plotting)."""
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT * FROM reports WHERE patient_id = ? ORDER BY study_date ASC, created_at ASC",
+            (patient_id,),
+        ).fetchall()
+    return [_row_to_report(r) for r in rows]
+
+
 def list_all_reports(db_path: str | None = None) -> list[Report]:
     with _conn(db_path) as c:
         rows = c.execute("SELECT * FROM reports ORDER BY created_at DESC").fetchall()

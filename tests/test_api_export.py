@@ -206,3 +206,68 @@ def test_cstore_log_limit_validation(client):
     assert client.get("/cstore/log?limit=0").status_code == 400
     assert client.get("/cstore/log?limit=501").status_code == 400
     assert client.get("/cstore/log?limit=10").status_code == 200
+
+
+# ── 7.6  Longitudinal patient reports ────────────────────────────────────────
+
+
+def test_list_reports_for_patient_groups_across_studies(client):
+    """Two studies, same patient_id → both reports come back, sorted by study_date."""
+    from app.api import reports_db
+
+    reports_db.create_report(
+        study_id="visit-1",
+        finding_id=None,
+        patient_name="Long Term",
+        study_date="2026-01-15",
+        model="phase4a",
+        hc_mm=180.0,
+        ga_str="17w 0d",
+        ga_weeks=17.0,
+        trimester="Second trimester (14–28w)",
+        reliability=0.9,
+        confidence_label="HIGH",
+        pixel_spacing_mm=0.154,
+        elapsed_ms=400.0,
+        narrative_p1="",
+        narrative_p2="",
+        narrative_p3=None,
+        narrative_impression=None,
+        used_llm=False,
+        patient_id="MRN-LONG",
+    )
+    reports_db.create_report(
+        study_id="visit-2",
+        finding_id=None,
+        patient_name="Long Term",
+        study_date="2026-04-10",
+        model="phase4a",
+        hc_mm=255.0,
+        ga_str="22w 0d",
+        ga_weeks=22.0,
+        trimester="Second trimester (14–28w)",
+        reliability=0.9,
+        confidence_label="HIGH",
+        pixel_spacing_mm=0.154,
+        elapsed_ms=400.0,
+        narrative_p1="",
+        narrative_p2="",
+        narrative_p3=None,
+        narrative_impression=None,
+        used_llm=False,
+        patient_id="MRN-LONG",
+    )
+
+    resp = client.get("/patients/MRN-LONG/reports")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 2
+    # Oldest first per the endpoint contract
+    assert rows[0]["study_date"] == "2026-01-15"
+    assert rows[1]["study_date"] == "2026-04-10"
+
+
+def test_list_reports_for_patient_empty_for_unknown_id(client):
+    resp = client.get("/patients/MRN-NOT-A-REAL-PATIENT/reports")
+    assert resp.status_code == 200
+    assert resp.json() == []

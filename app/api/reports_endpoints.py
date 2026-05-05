@@ -536,6 +536,20 @@ def list_reports_for_study_endpoint(study_id: str):
 
 
 @router.get(
+    "/patients/{patient_id}/reports",
+    response_model=list[ReportResponse],
+    summary="List all reports across studies for a single patient (longitudinal)",
+)
+def list_reports_for_patient_endpoint(patient_id: str):
+    """Used by the longitudinal growth-chart panel to plot a patient's HC
+    progression across multiple visits. Sorted oldest-first by study_date."""
+    if not patient_id or len(patient_id) > 200:
+        raise HTTPException(400, "patient_id must be 1–200 chars")
+    rows = reports_db.list_reports_for_patient(patient_id)
+    return [ReportResponse(**r.to_dict()) for r in rows]
+
+
+@router.get(
     "/reports/{report_id}",
     response_model=ReportResponse,
     summary="Fetch one report's JSON",
