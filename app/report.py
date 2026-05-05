@@ -747,11 +747,10 @@ def _section_biometric_findings(story, st, report):
                 P(f"BPD-derived GA: {bpd_ga_str}" if bpd_ga_str else "BPD outside nomogram range"),
             ],
         )
-        # BPD-HC discordance row when both GA estimates are available.
-        # Mixed format: ≤7 days as "Xd", >7 days as "Xw Yd" so e.g. 12d → "1w 5d".
+        # BPD-HC discordance — always display as "Xd" (days only).
         if bpd_ga_weeks and ga_weeks:
             disc_days_bpd = abs(round(ga_weeks * 7) - round(bpd_ga_weeks * 7))
-            disc_disp = f"{disc_days_bpd}d" if disc_days_bpd <= 7 else _format_weeks_days(disc_days_bpd)
+            disc_disp = f"{disc_days_bpd}d"
             if disc_days_bpd > 10:
                 rows.append([
                     P("HC/BPD GA discordance"),
@@ -1677,22 +1676,22 @@ class _BiometricProxy:
         self.bpd_mm = getattr(report, "bpd_mm", None)
         self.fetal_presentation = getattr(report, "fetal_presentation", None)
         self.prior_biometry = getattr(report, "prior_biometry", None)
-
-    patient_name = "—"
-    patient_id = None
-    patient_dob = None
-    ordering_facility = None
-    referring_physician = None
-    sonographer_name = None
-    clinical_indication = None
-    study_date = "—"
-    us_approach = None
-    image_quality = None
-    original_image_b64 = None
-    overlay_image_b64 = None
-    gradcam_image_b64 = None
-    accession_number = None
-    report_mode = "template"
+        # Patient / exam fields — read from report object when supplied
+        self.patient_name = getattr(report, "patient_name", None) or "—"
+        self.patient_id = getattr(report, "patient_id", None)
+        self.patient_dob = getattr(report, "patient_dob", None)
+        self.ordering_facility = getattr(report, "ordering_facility", None)
+        self.referring_physician = getattr(report, "referring_physician", None)
+        self.sonographer_name = getattr(report, "sonographer_name", None)
+        self.clinical_indication = getattr(report, "clinical_indication", None)
+        self.study_date = getattr(report, "study_date", None) or "—"
+        self.us_approach = getattr(report, "us_approach", None)
+        self.image_quality = getattr(report, "image_quality", None)
+        self.original_image_b64 = getattr(report, "original_image_b64", None)
+        self.overlay_image_b64 = getattr(report, "overlay_image_b64", None)
+        self.gradcam_image_b64 = getattr(report, "gradcam_image_b64", None)
+        self.accession_number = getattr(report, "accession_number", None)
+        self.report_mode = getattr(report, "report_mode", "template")
 
 
 class _NoImages:
