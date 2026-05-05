@@ -40,7 +40,14 @@ from app.report import (
     generate_static_report,
 )
 
-from . import findings_store, model_manager, reports_db, xai_endpoints
+from . import (
+    dicom_sr_generator,
+    fhir_generator,
+    findings_store,
+    model_manager,
+    reports_db,
+    xai_endpoints,
+)
 from .schemas import (
     AuditEntryResponse,
     CreateCombinedReportRequest,
@@ -555,6 +562,53 @@ def get_report_pdf_endpoint(report_id: str):
         headers={
             "Content-Disposition": f'inline; filename="report-{report.id}-{suffix}.pdf"',
             "X-Report-Signed": "1" if report.is_signed else "0",
+        },
+    )
+
+
+@router.get(
+    "/reports/{report_id}/fhir",
+    summary="Export the report as a FHIR R4 Bundle (DiagnosticReport + Observations)",
+    responses={200: {"content": {"application/fhir+json": {}}}},
+)
+def get_report_fhir_endpoint(report_id: str):
+    """Return a FHIR R4 collection Bundle containing one Patient, one
+    DiagnosticReport (LOINC 42148-7 — Fetal Ultrasound Report), and one
+    Observation per recorded measurement (HC = LOINC 11779-6, BPD = 11820-2,
+    GA = 18185-9). Suitable for hospital FHIR-server ingestion or
+    interoperability testing."""
+    report = reports_db.get_report(report_id)
+    if report is None:
+        raise HTTPException(404, "report not found")
+    bundle = fhir_generator.report_to_fhir_bundle(report)
+    return Response(
+        content=json.dumps(bundle, indent=2),
+        media_type="application/fhir+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="report-{report.id}.fhir.json"',
+        },
+    )
+
+
+@router.get(
+    "/reports/{report_id}/dicom",
+    summary="Export the report as a DICOM Comprehensive SR (.dcm)",
+    responses={200: {"content": {"application/dicom": {}}}},
+)
+def get_report_dicom_sr_endpoint(report_id: str):
+    """Return a DICOM Comprehensive SR Storage object (SOP class
+    1.2.840.10008.5.1.4.1.1.88.33) containing the report's biometric
+    measurements as numeric content items (LOINC-coded). Suitable for
+    PACS C-STORE or DICOM viewer review (DCMTK / Weasis / OHIF)."""
+    report = reports_db.get_report(report_id)
+    if report is None:
+        raise HTTPException(404, "report not found")
+    dcm_bytes = dicom_sr_generator.report_to_dicom_sr(report)
+    return Response(
+        content=dcm_bytes,
+        media_type="application/dicom",
+        headers={
+            "Content-Disposition": f'attachment; filename="report-{report.id}.dcm"',
         },
     )
 

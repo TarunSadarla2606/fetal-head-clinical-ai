@@ -32,6 +32,7 @@ jobs:
             tests/test_api_infer_mock.py \
             tests/test_api_xai.py \
             tests/test_api_reports.py \
+            tests/test_api_export.py \
             tests/test_model_manager_unit.py \
             tests/test_shapes.py
       - name: Ruff format check (API + new tests)
@@ -45,6 +46,7 @@ jobs:
             tests/test_api_infer_mock.py \
             tests/test_api_xai.py \
             tests/test_api_reports.py \
+            tests/test_api_export.py \
             tests/test_model_manager_unit.py \
             tests/test_shapes.py
 
