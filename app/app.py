@@ -20,37 +20,47 @@ Key production features over the original deployment:
   - Structured clinical report card inline (not PDF-only)
 """
 
-import os
 import io
-import time
-import random
+import os
 import platform
-import numpy as np
+import time
+
 import cv2
-import torch
 import matplotlib
+import numpy as np
+import torch
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import streamlit as st
-from PIL import Image
-import imageio
 from pathlib import Path
 
+import imageio
+import matplotlib.pyplot as plt
+import streamlit as st
 from inference import (
-    # loaders
-    load_phase0, load_phase4a, load_phase2, load_phase4b,
-    get_model_info,
-    # prediction
-    predict_single_frame, predict_cine_clip,
-    # utilities
-    validate_input, make_comparison_overlay, compute_gt_metrics,
-    confidence_label,
     # constants
-    DEVICE, INPUT_H, INPUT_W, N_FRAMES, IMG_MEAN, IMG_STD,
+    DEVICE,
+    INPUT_H,
+    INPUT_W,
+    N_FRAMES,
+    compute_gt_metrics,
+    confidence_label,
+    get_model_info,
+    # loaders
+    load_phase0,
+    load_phase2,
+    load_phase4a,
+    load_phase4b,
+    make_comparison_overlay,
+    predict_cine_clip,
+    # prediction
+    predict_single_frame,
+    # utilities
+    validate_input,
 )
-from xai import build_xai_panel
-from report import generate_static_report, generate_cine_report, generate_comparison_report
 from model_card import render_model_card
+from PIL import Image
+from report import generate_cine_report, generate_comparison_report, generate_static_report
+from xai import build_xai_panel
 
 # ── page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -69,19 +79,35 @@ if "total_latency_ms" not in st.session_state:
     st.session_state.total_latency_ms = 0.0
 if "load_start"       not in st.session_state:
     st.session_state.load_start       = time.perf_counter()
+# 3-source pixel spacing: DICOM > HC18 CSV > user (default = HC18 median 0.154 mm/px)
+if "ps_input"  not in st.session_state:
+    st.session_state.ps_input  = 0.154
+if "ps_source" not in st.session_state:
+    st.session_state.ps_source = "user"
+# Persisted inference results — survive form-field reruns so patient form stays visible
+if "static_result" not in st.session_state:
+    st.session_state.static_result = None
+if "cine_result" not in st.session_state:
+    st.session_state.cine_result = None
+if "static_pdf" not in st.session_state:
+    st.session_state.static_pdf = None
+if "cine_pdf" not in st.session_state:
+    st.session_state.cine_pdf = None
 
 
 # ── Pseudo-LDDM v2 cine synthesis ─────────────────────────────────────────────
 
 def ornstein_uhlenbeck(n, theta=0.3, sigma=1.0, rng=None):
-    if rng is None: rng = np.random.default_rng()
+    if rng is None:
+        rng = np.random.default_rng()
     x = np.zeros(n)
     for t in range(1, n):
         x[t] = x[t-1] + theta * (0 - x[t-1]) + sigma * rng.normal(0, 1)
     return x
 
 def add_rician_speckle(img, std=0.08, rng=None):
-    if rng is None: rng = np.random.default_rng()
+    if rng is None:
+        rng = np.random.default_rng()
     n1 = rng.normal(0, std, img.shape).astype(np.float32)
     n2 = rng.normal(0, std, img.shape).astype(np.float32)
     return np.clip(np.sqrt((img + n1) ** 2 + n2 ** 2), 0, 1)
@@ -106,7 +132,8 @@ def generate_cine(img_gray, n_frames=N_FRAMES, seed=42):
     frames = []
     for i in range(n_frames):
         M = cv2.getRotationMatrix2D((cx, cy), float(rot[i]), 1.0)
-        M[0, 2] += float(tx[i]); M[1, 2] += float(ty[i])
+        M[0, 2] += float(tx[i])
+        M[1, 2] += float(ty[i])
         w = cv2.warpAffine(img_f, M, (INPUT_W, INPUT_H),
                            flags=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -122,6 +149,44 @@ def frames_to_gif(frames, fps=8):
                     format="GIF", fps=fps, loop=0)
     buf.seek(0)
     return buf.read()
+
+
+# ── pixel spacing helpers (3-source pipeline) ─────────────────────────────────
+
+@st.cache_data
+def _load_hc18_csv() -> dict:
+    """Load filename → pixel spacing from training_set_pixel_size_and_HC.csv."""
+    csv_candidates = [
+        Path(__file__).parent.parent / "training_set_pixel_size_and_HC.csv",
+        Path(__file__).parent / "training_set_pixel_size_and_HC.csv",
+    ]
+    for csv_path in csv_candidates:
+        if csv_path.exists():
+            try:
+                import csv
+                result = {}
+                with open(csv_path) as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        fn = (row.get("filename") or "").strip()
+                        ps = (row.get("pixel size(mm)") or "").strip()
+                        if fn and ps:
+                            result[fn] = float(ps)
+                return result
+            except Exception:
+                pass
+    return {}
+
+
+def _dicom_pixel_spacing(file_bytes: bytes) -> float | None:
+    """Extract pixel spacing from DICOM tag (0028,0030) using pydicom."""
+    try:
+        import pydicom
+        ds = pydicom.dcmread(io.BytesIO(file_bytes))
+        ps = ds.PixelSpacing
+        return float(ps[0])
+    except Exception:
+        return None
 
 
 # ── model loading (cached) ────────────────────────────────────────────────────
@@ -170,7 +235,8 @@ REPORTED_METRICS = {
 DEMO_DIR = Path("demo_subjects")
 
 def get_demo_subjects():
-    if not DEMO_DIR.exists(): return []
+    if not DEMO_DIR.exists():
+        return []
     return sorted([f.name for f in DEMO_DIR.glob("*.png")])
 
 def load_demo_image(filename):
@@ -261,12 +327,41 @@ with st.sidebar:
     st.title("⚙️ Settings")
 
     pixel_spacing = st.number_input(
-        "Pixel spacing (mm/pixel)", value=0.070,
-        min_value=0.010, max_value=0.300, step=0.001, format="%.4f",
+        "Pixel spacing (mm/pixel)",
+        min_value=0.010, max_value=0.500, step=0.001, format="%.4f",
+        key="ps_input",
         help="Physical size of one pixel. Found in DICOM tag (0028,0030). "
-             "Typical fetal US: 0.05–0.15 mm/px. "
+             "Default 0.154 mm/px = HC18 dataset median. "
              "Incorrect spacing directly affects HC and GA accuracy.",
     )
+    _ps_source = st.session_state.get("ps_source", "user")
+    if _ps_source == "dicom":
+        st.caption("✅ DICOM-derived — pixel spacing verified from tag (0028,0030)")
+    elif _ps_source == "csv":
+        st.caption("✅ HC18 CSV — spacing from training dataset record")
+    else:
+        if not (0.030 <= pixel_spacing <= 0.500):
+            st.caption(f"⚠️ Value {pixel_spacing:.4f} mm/px is outside typical range (0.030–0.500)")
+        else:
+            st.caption("⚠️ User-supplied pixel spacing — verify before clinical use")
+
+    # Confirmation checkbox only needed when spacing is user-supplied (not CSV/DICOM)
+    if _ps_source == "user":
+        pixel_spacing_confirmed = st.checkbox(
+            "I confirm the pixel spacing matches the DICOM tag (0028,0030)",
+            value=False,
+            help=(
+                "HC and GA both depend on pixel spacing being correct. "
+                "Check the source DICOM before generating a clinical report."
+            ),
+            key="pixel_spacing_confirmed",
+        )
+        if not pixel_spacing_confirmed:
+            st.caption(
+                "⚠️ Confirm pixel spacing above before generating a clinical report."
+            )
+    else:
+        pixel_spacing_confirmed = True  # CSV/DICOM sources are pre-verified
 
     use_llm = st.checkbox(
         "Enable LLM clinical summary",
@@ -387,6 +482,7 @@ with tab_static:
         horizontal=True, key="mode_s",
     )
 
+    _hc18_csv = _load_hc18_csv()
     img_gray = None
     if input_mode_s == "Use demo subject" and demo_subjects:
         selected_demo_s = st.selectbox(
@@ -394,15 +490,33 @@ with tab_static:
             format_func=lambda x: x.replace(".png", "").replace("_", " "),
             key="demo_s",
         )
+        _csv_ps = _hc18_csv.get(selected_demo_s)
+        if _csv_ps:
+            _col_a, _col_b = st.columns([3, 1])
+            _col_a.caption(f"HC18 CSV pixel spacing for this image: **{_csv_ps:.4f} mm/px**")
+            if _col_b.button("Apply", key="apply_csv_s"):
+                st.session_state.ps_input = _csv_ps
+                st.session_state.ps_source = "csv"
+                st.rerun()
         if st.button("Run analysis on demo subject", key="run_demo_s"):
             img_gray = load_demo_image(selected_demo_s)
     else:
         uploaded_s = st.file_uploader(
-            "Upload ultrasound image (PNG or JPG)",
-            type=["png", "jpg", "jpeg"], key="sf",
+            "Upload ultrasound image (PNG or JPG, or .dcm DICOM)",
+            type=["png", "jpg", "jpeg", "dcm"], key="sf",
         )
         if uploaded_s:
-            img_gray = np.array(Image.open(uploaded_s).convert("L"))
+            _raw = uploaded_s.read()
+            if uploaded_s.name.lower().endswith(".dcm"):
+                _dicom_ps = _dicom_pixel_spacing(_raw)
+                if _dicom_ps:
+                    st.session_state.ps_input = _dicom_ps
+                    st.session_state.ps_source = "dicom"
+                    st.info(f"DICOM pixel spacing extracted: **{_dicom_ps:.4f} mm/px** ✅")
+                img_gray = np.array(Image.open(io.BytesIO(_raw)).convert("L"))
+            else:
+                st.session_state.ps_source = "user"
+                img_gray = np.array(Image.open(io.BytesIO(_raw)).convert("L"))
 
     if img_gray is not None:
 
@@ -426,6 +540,9 @@ with tab_static:
             xai_s = build_xai_panel(img_gray, result_s, phase0_model=active_static_model)
 
         update_session_stats(result_s["elapsed_ms"])
+        # Persist result so the patient form survives form-field reruns
+        st.session_state.static_result = result_s
+        st.session_state.static_pdf = None  # invalidate any previous PDF
 
         # Image panels
         c1, c2, c3 = st.columns(3)
@@ -448,20 +565,6 @@ with tab_static:
             render_metrics_card(result_s, active_static_name, pixel_spacing)
             st.markdown("---")
             render_gt_section(result_s, pixel_spacing, key_prefix="static")
-            st.markdown("---")
-
-            with st.spinner("Generating clinical report..."):
-                pdf = generate_static_report(
-                    result_s, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
-                    model_name=active_static_name, pixel_spacing=pixel_spacing,
-                )
-            st.download_button(
-                "⬇️ Download Clinical Report (PDF)", pdf,
-                "fetal_hc_static_report.pdf", "application/pdf",
-                use_container_width=True,
-            )
-            report_mode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
-            st.caption(f"Report type: {report_mode}")
         else:
             st.warning("Could not estimate HC. Check pixel spacing and image quality.")
 
@@ -476,7 +579,143 @@ with tab_static:
                 f"- **HC formula:** Ramanujan ellipse perimeter approximation\n"
                 f"- **GA formula:** Hadlock et al. AJR 1984 (±2 weeks CI)\n"
                 f"- **Pixel spacing:** {pixel_spacing:.4f} mm/px"
-                + (f"\n- **Pruning:** Hybrid Crossover channel merging + KD recovery · 3 prune-FT cycles · 49.1% channel compression · Wilcoxon p=0.0049" if use_phase4a else "")
+                + ("\n- **Pruning:** Hybrid Crossover channel merging + KD recovery · 3 prune-FT cycles · 49.1% channel compression · Wilcoxon p=0.0049" if use_phase4a else "")
+            )
+
+
+    # ── Persistent report-generation section (survives form-field reruns) ──────
+    _stored_s = st.session_state.get("static_result")
+    if _stored_s and _stored_s.get("hc_mm"):
+        from datetime import date as _date_s, timedelta as _td_s
+        st.markdown("---")
+        st.success(
+            f"✓ Analysis results loaded — HC **{_stored_s['hc_mm']:.1f} mm** · "
+            f"GA **{_stored_s.get('ga_str', '—')}** · "
+            f"Confidence **{_stored_s.get('confidence_label', '—')}**"
+        )
+
+        st.subheader("Generate Clinical Report")
+
+        # Demo Mode
+        demo_mode_s = st.toggle("Enable Demo Mode (pre-fill clinical scenario)", key="demo_mode_s")
+        if demo_mode_s:
+            _today_s = _date_s.today()
+            _scenario_s = st.selectbox(
+                "Select clinical scenario",
+                [
+                    "A — Normal 2nd trimester",
+                    "B — LMP discordance (preterm risk)",
+                    "C — IUGR / BPD mismatch",
+                ],
+                key="scenario_s",
+            )
+            if _scenario_s.startswith("A"):
+                _dp_name, _dp_id   = "Demo Patient A", "HC18-DEMO-001"
+                _dp_lmp            = (_today_s - _td_s(days=137)).strftime("%Y-%m-%d")
+                _dp_ref, _dp_fac   = "Dr. Sarah Chen, OB/GYN", "City General Hospital"
+                _dp_indic          = "Routine 2nd trimester anatomy scan"
+                _dp_appr, _dp_qual = "transabdominal", "optimal"
+                _dp_bpd, _dp_pres  = 0.0, "cephalic"
+            elif _scenario_s.startswith("B"):
+                _dp_name, _dp_id   = "Demo Patient B", "HC18-DEMO-002"
+                _dp_lmp            = (_today_s - _td_s(days=104)).strftime("%Y-%m-%d")
+                _dp_ref, _dp_fac   = "Dr. James Park, MFM", "University Medical Center"
+                _dp_indic          = "LMP-size discordance — rule out growth restriction"
+                _dp_appr, _dp_qual = "transabdominal", "suboptimal"
+                _dp_bpd, _dp_pres  = 0.0, "cephalic"
+            else:
+                _dp_name, _dp_id   = "Demo Patient C", "HC18-DEMO-003"
+                _dp_lmp            = (_today_s - _td_s(days=168)).strftime("%Y-%m-%d")
+                _dp_ref, _dp_fac   = "Dr. Maria Santos, MFM", "Perinatology Associates"
+                _dp_indic          = "Suspected IUGR — detailed biometry"
+                _dp_appr, _dp_qual = "transabdominal", "suboptimal"
+                _dp_bpd, _dp_pres  = 52.0, "cephalic"
+        else:
+            _dp_name = _dp_id = _dp_lmp = _dp_ref = _dp_fac = _dp_indic = ""
+            _dp_appr, _dp_qual = "transabdominal", "optimal"
+            _dp_bpd, _dp_pres  = 0.0, "cephalic"
+
+        with st.expander("Patient & Exam Information", expanded=True):
+            _sc1, _sc2 = st.columns(2)
+            _sp_name  = _sc1.text_input("Patient Name",        value=_dp_name,  key="sp_name_s")
+            _sp_id    = _sc2.text_input("Patient ID / MRN",    value=_dp_id,    key="sp_id_s")
+            _sp_lmp   = _sc1.text_input("LMP (YYYY-MM-DD)",    value=_dp_lmp,   key="sp_lmp_s")
+            _sp_ref   = _sc2.text_input("Referring Physician",  value=_dp_ref,   key="sp_ref_s")
+            _sp_fac   = _sc1.text_input("Ordering Facility",   value=_dp_fac,   key="sp_fac_s")
+            _sp_indic = _sc2.text_input("Clinical Indication",  value=_dp_indic, key="sp_indic_s")
+            _appr_opts = ["transabdominal", "transvaginal"]
+            _qual_opts = ["optimal", "suboptimal", "limited"]
+            _pres_opts = ["cephalic", "breech", "transverse", "not_assessed"]
+            _sa1, _sa2, _sa3 = st.columns(3)
+            _sp_appr = _sa1.selectbox("US Approach",         _appr_opts, index=_appr_opts.index(_dp_appr), key="sp_appr_s")
+            _sp_qual = _sa2.selectbox("Image Quality",       _qual_opts, index=_qual_opts.index(_dp_qual), key="sp_qual_s")
+            _sp_pres = _sa3.selectbox("Fetal Presentation",  _pres_opts, index=_pres_opts.index(_dp_pres), key="sp_pres_s")
+            _sb1, _sb2 = st.columns(2)
+            _sp_bpd   = _sb1.number_input("BPD (mm, optional)", value=_dp_bpd, min_value=0.0, max_value=150.0, step=0.1, key="sp_bpd_s")
+            _sp_prior = _sb2.text_input("Prior Biometry", value="", key="sp_prior_s")
+            # Read-only auto-filled analysis results
+            st.markdown("**AI analysis results (read-only)**")
+            _ra1, _ra2, _ra3 = st.columns(3)
+            _ra1.text_input("HC (mm)",    value=f"{_stored_s['hc_mm']:.1f}",            disabled=True, key="ra_hc_s")
+            _ra2.text_input("GA",         value=_stored_s.get("ga_str", "—"),            disabled=True, key="ra_ga_s")
+            _ra3.text_input("Confidence", value=_stored_s.get("confidence_label", "—"), disabled=True, key="ra_conf_s")
+
+        _ps_src_s = st.session_state.get("ps_source", "user")
+        _needs_confirm_s = _ps_src_s == "user" and not pixel_spacing_confirmed
+        if _needs_confirm_s:
+            st.warning("Confirm pixel spacing in the sidebar before generating a clinical report.")
+
+        if st.button(
+            "Generate Clinical Report (PDF)",
+            disabled=_needs_confirm_s,
+            type="primary",
+            key="gen_report_s",
+            use_container_width=True,
+        ):
+            class _PatientProxy_S:  # noqa: N801
+                patient_name        = _sp_name or "—"
+                patient_id          = _sp_id or None
+                patient_dob         = None
+                lmp                 = _sp_lmp or None
+                ordering_facility   = _sp_fac or None
+                referring_physician = _sp_ref or None
+                sonographer_name    = None
+                clinical_indication = _sp_indic or None
+                study_date          = _date_s.today().strftime("%Y-%m-%d")
+                us_approach         = _sp_appr
+                image_quality       = _sp_qual
+                pixel_spacing_mm    = pixel_spacing
+                pixel_spacing_dicom_derived = (_ps_src_s == "dicom")
+                pixel_spacing_source = _ps_src_s.upper()
+                bpd_mm              = _sp_bpd if _sp_bpd > 0 else None
+                fetal_presentation  = _sp_pres
+                prior_biometry      = _sp_prior or None
+                original_image_b64  = None
+                overlay_image_b64   = None
+                gradcam_image_b64   = None
+                accession_number    = None
+                report_mode         = "template"
+            with st.spinner("Generating clinical report..."):
+                st.session_state.static_pdf = generate_static_report(
+                    _stored_s,
+                    api_key=ANTHROPIC_API_KEY,
+                    use_llm=use_llm,
+                    model_name=active_static_name,
+                    pixel_spacing=pixel_spacing,
+                    report=_PatientProxy_S(),
+                    pixel_spacing_source=_ps_src_s.upper(),
+                )
+            _rmode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
+            st.caption(f"Report type: {_rmode}")
+
+        if st.session_state.get("static_pdf"):
+            st.download_button(
+                "⬇️ Download Clinical Report (PDF)",
+                st.session_state.static_pdf,
+                "fetal_hc_static_report.pdf",
+                "application/pdf",
+                use_container_width=True,
+                key="dl_static_s",
             )
 
 
@@ -523,6 +762,7 @@ with tab_cine:
         horizontal=True, key="mode_c",
     )
 
+    _hc18_csv_c = _load_hc18_csv()
     img_gray_c = None
     if input_mode_c == "Use demo subject" and demo_subjects_c:
         selected_demo_c = st.selectbox(
@@ -530,15 +770,33 @@ with tab_cine:
             format_func=lambda x: x.replace(".png", "").replace("_", " "),
             key="demo_c",
         )
+        _csv_ps_c = _hc18_csv_c.get(selected_demo_c)
+        if _csv_ps_c:
+            _col_ca, _col_cb = st.columns([3, 1])
+            _col_ca.caption(f"HC18 CSV pixel spacing for this image: **{_csv_ps_c:.4f} mm/px**")
+            if _col_cb.button("Apply", key="apply_csv_c"):
+                st.session_state.ps_input = _csv_ps_c
+                st.session_state.ps_source = "csv"
+                st.rerun()
         if st.button("Run cine analysis on demo subject", key="run_demo_c"):
             img_gray_c = load_demo_image(selected_demo_c)
     else:
         uploaded_c = st.file_uploader(
-            "Upload ultrasound image (PNG or JPG)",
-            type=["png", "jpg", "jpeg"], key="cine",
+            "Upload ultrasound image (PNG or JPG, or .dcm DICOM)",
+            type=["png", "jpg", "jpeg", "dcm"], key="cine",
         )
         if uploaded_c:
-            img_gray_c = np.array(Image.open(uploaded_c).convert("L"))
+            _raw_c = uploaded_c.read()
+            if uploaded_c.name.lower().endswith(".dcm"):
+                _dicom_ps_c = _dicom_pixel_spacing(_raw_c)
+                if _dicom_ps_c:
+                    st.session_state.ps_input = _dicom_ps_c
+                    st.session_state.ps_source = "dicom"
+                    st.info(f"DICOM pixel spacing extracted: **{_dicom_ps_c:.4f} mm/px** ✅")
+                img_gray_c = np.array(Image.open(io.BytesIO(_raw_c)).convert("L"))
+            else:
+                st.session_state.ps_source = "user"
+                img_gray_c = np.array(Image.open(io.BytesIO(_raw_c)).convert("L"))
 
     if img_gray_c is not None:
 
@@ -571,6 +829,8 @@ with tab_cine:
             xai_c = build_xai_panel(img_gray_c, result_c)
 
         update_session_stats(result_c["elapsed_ms"])
+        st.session_state.cine_result = result_c
+        st.session_state.cine_pdf = None
 
         st.markdown("#### Segmentation results")
         c1, c2, c3 = st.columns(3)
@@ -610,28 +870,16 @@ with tab_cine:
                 ax.fill_between(range(len(result_c["per_frame_hc"])),
                                 hc - std, hc + std, alpha=0.2, color="#2563eb",
                                 label=f"±1 std ({std:.2f} mm)")
-                ax.set_xlabel("Frame"); ax.set_ylabel("HC (mm)")
+                ax.set_xlabel("Frame")
+                ax.set_ylabel("HC (mm)")
                 ax.set_title("HC stability across the cine-loop")
-                ax.legend(fontsize=8); ax.grid(alpha=0.3)
+                ax.legend(fontsize=8)
+                ax.grid(alpha=0.3)
                 st.pyplot(fig, use_container_width=False)
                 plt.close(fig)
                 st.markdown("---")
 
             render_gt_section(result_c, pixel_spacing, key_prefix="cine")
-            st.markdown("---")
-
-            with st.spinner("Generating clinical report..."):
-                pdf_c = generate_cine_report(
-                    result_c, api_key=ANTHROPIC_API_KEY, use_llm=use_llm,
-                    model_name=active_cine_name, pixel_spacing=pixel_spacing,
-                )
-            st.download_button(
-                "⬇️ Download Clinical Report (PDF)", pdf_c,
-                "fetal_hc_cine_report.pdf", "application/pdf",
-                use_container_width=True,
-            )
-            report_mode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
-            st.caption(f"Report type: {report_mode}")
         else:
             st.warning("Could not estimate HC from consensus. Check pixel spacing.")
 
@@ -645,7 +893,140 @@ with tab_cine:
                 f"- **Runtime inference:** {result_c['elapsed_ms']:.1f} ms on {str(DEVICE).upper()}\n"
                 f"- **Ablation (no attention):** Dice 81.48% · MAE 19.37mm\n"
                 f"- **Pixel spacing:** {pixel_spacing:.4f} mm/px"
-                + (f"\n- **Pruning:** Hybrid Crossover + surgical decoder reconstruction + KD · 49.6% channel compression · Wilcoxon p=0.1013 (NS — statistically indistinguishable from baseline)" if use_phase4b else "")
+                + ("\n- **Pruning:** Hybrid Crossover + surgical decoder reconstruction + KD · 49.6% channel compression · Wilcoxon p=0.1013 (NS — statistically indistinguishable from baseline)" if use_phase4b else "")
+            )
+
+    # ── Persistent cine report-generation section ────────────────────────────
+    _stored_c = st.session_state.get("cine_result")
+    if _stored_c and _stored_c.get("hc_mm"):
+        from datetime import date as _date_c, timedelta as _td_c
+        st.markdown("---")
+        st.success(
+            f"✓ Cine analysis results loaded — HC **{_stored_c['hc_mm']:.1f} mm** · "
+            f"GA **{_stored_c.get('ga_str', '—')}** · "
+            f"Confidence **{_stored_c.get('confidence_label', '—')}**"
+        )
+
+        st.subheader("Generate Cine Clinical Report")
+
+        demo_mode_c = st.toggle("Enable Demo Mode (pre-fill clinical scenario)", key="demo_mode_c")
+        if demo_mode_c:
+            _today_c = _date_c.today()
+            _scenario_c = st.selectbox(
+                "Select clinical scenario",
+                [
+                    "A — Normal 2nd trimester",
+                    "B — LMP discordance (preterm risk)",
+                    "C — IUGR / BPD mismatch",
+                ],
+                key="scenario_c",
+            )
+            if _scenario_c.startswith("A"):
+                _cp_name, _cp_id   = "Demo Patient A", "HC18-DEMO-001"
+                _cp_lmp            = (_today_c - _td_c(days=137)).strftime("%Y-%m-%d")
+                _cp_ref, _cp_fac   = "Dr. Sarah Chen, OB/GYN", "City General Hospital"
+                _cp_indic          = "Routine 2nd trimester anatomy scan"
+                _cp_appr, _cp_qual = "transabdominal", "optimal"
+                _cp_bpd, _cp_pres  = 0.0, "cephalic"
+            elif _scenario_c.startswith("B"):
+                _cp_name, _cp_id   = "Demo Patient B", "HC18-DEMO-002"
+                _cp_lmp            = (_today_c - _td_c(days=104)).strftime("%Y-%m-%d")
+                _cp_ref, _cp_fac   = "Dr. James Park, MFM", "University Medical Center"
+                _cp_indic          = "LMP-size discordance — rule out growth restriction"
+                _cp_appr, _cp_qual = "transabdominal", "suboptimal"
+                _cp_bpd, _cp_pres  = 0.0, "cephalic"
+            else:
+                _cp_name, _cp_id   = "Demo Patient C", "HC18-DEMO-003"
+                _cp_lmp            = (_today_c - _td_c(days=168)).strftime("%Y-%m-%d")
+                _cp_ref, _cp_fac   = "Dr. Maria Santos, MFM", "Perinatology Associates"
+                _cp_indic          = "Suspected IUGR — detailed biometry"
+                _cp_appr, _cp_qual = "transabdominal", "suboptimal"
+                _cp_bpd, _cp_pres  = 52.0, "cephalic"
+        else:
+            _cp_name = _cp_id = _cp_lmp = _cp_ref = _cp_fac = _cp_indic = ""
+            _cp_appr, _cp_qual = "transabdominal", "optimal"
+            _cp_bpd, _cp_pres  = 0.0, "cephalic"
+
+        with st.expander("Patient & Exam Information", expanded=True):
+            _cc1, _cc2 = st.columns(2)
+            _cp_name_f  = _cc1.text_input("Patient Name",        value=_cp_name,  key="cp_name_c")
+            _cp_id_f    = _cc2.text_input("Patient ID / MRN",    value=_cp_id,    key="cp_id_c")
+            _cp_lmp_f   = _cc1.text_input("LMP (YYYY-MM-DD)",    value=_cp_lmp,   key="cp_lmp_c")
+            _cp_ref_f   = _cc2.text_input("Referring Physician",  value=_cp_ref,   key="cp_ref_c")
+            _cp_fac_f   = _cc1.text_input("Ordering Facility",   value=_cp_fac,   key="cp_fac_c")
+            _cp_indic_f = _cc2.text_input("Clinical Indication",  value=_cp_indic, key="cp_indic_c")
+            _ca1, _ca2, _ca3 = st.columns(3)
+            _appr_opts_c = ["transabdominal", "transvaginal"]
+            _qual_opts_c = ["optimal", "suboptimal", "limited"]
+            _pres_opts_c = ["cephalic", "breech", "transverse", "not_assessed"]
+            _cp_appr_f = _ca1.selectbox("US Approach",        _appr_opts_c, index=_appr_opts_c.index(_cp_appr), key="cp_appr_c")
+            _cp_qual_f = _ca2.selectbox("Image Quality",      _qual_opts_c, index=_qual_opts_c.index(_cp_qual), key="cp_qual_c")
+            _cp_pres_f = _ca3.selectbox("Fetal Presentation", _pres_opts_c, index=_pres_opts_c.index(_cp_pres), key="cp_pres_c")
+            _cb1, _cb2 = st.columns(2)
+            _cp_bpd_f   = _cb1.number_input("BPD (mm, optional)", value=_cp_bpd, min_value=0.0, max_value=150.0, step=0.1, key="cp_bpd_c")
+            _cp_prior_f = _cb2.text_input("Prior Biometry", value="", key="cp_prior_c")
+            st.markdown("**AI analysis results (read-only)**")
+            _ra1c, _ra2c, _ra3c = st.columns(3)
+            _ra1c.text_input("HC (mm)",    value=f"{_stored_c['hc_mm']:.1f}",             disabled=True, key="ra_hc_c")
+            _ra2c.text_input("GA",         value=_stored_c.get("ga_str", "—"),             disabled=True, key="ra_ga_c")
+            _ra3c.text_input("Confidence", value=_stored_c.get("confidence_label", "—"),  disabled=True, key="ra_conf_c")
+
+        _ps_src_c = st.session_state.get("ps_source", "user")
+        _needs_confirm_c = _ps_src_c == "user" and not pixel_spacing_confirmed
+        if _needs_confirm_c:
+            st.warning("Confirm pixel spacing in the sidebar before generating a clinical report.")
+
+        if st.button(
+            "Generate Cine Clinical Report (PDF)",
+            disabled=_needs_confirm_c,
+            type="primary",
+            key="gen_report_c",
+            use_container_width=True,
+        ):
+            class _PatientProxy_C:  # noqa: N801
+                patient_name        = _cp_name_f or "—"
+                patient_id          = _cp_id_f or None
+                patient_dob         = None
+                lmp                 = _cp_lmp_f or None
+                ordering_facility   = _cp_fac_f or None
+                referring_physician = _cp_ref_f or None
+                sonographer_name    = None
+                clinical_indication = _cp_indic_f or None
+                study_date          = _date_c.today().strftime("%Y-%m-%d")
+                us_approach         = _cp_appr_f
+                image_quality       = _cp_qual_f
+                pixel_spacing_mm    = pixel_spacing
+                pixel_spacing_dicom_derived = (_ps_src_c == "dicom")
+                pixel_spacing_source = _ps_src_c.upper()
+                bpd_mm              = _cp_bpd_f if _cp_bpd_f > 0 else None
+                fetal_presentation  = _cp_pres_f
+                prior_biometry      = _cp_prior_f or None
+                original_image_b64  = None
+                overlay_image_b64   = None
+                gradcam_image_b64   = None
+                accession_number    = None
+                report_mode         = "template"
+            with st.spinner("Generating cine clinical report..."):
+                st.session_state.cine_pdf = generate_cine_report(
+                    _stored_c,
+                    api_key=ANTHROPIC_API_KEY,
+                    use_llm=use_llm,
+                    model_name=active_cine_name,
+                    pixel_spacing=pixel_spacing,
+                    report=_PatientProxy_C(),
+                    pixel_spacing_source=_ps_src_c.upper(),
+                )
+            _rmode_c = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
+            st.caption(f"Report type: {_rmode_c}")
+
+        if st.session_state.get("cine_pdf"):
+            st.download_button(
+                "⬇️ Download Cine Clinical Report (PDF)",
+                st.session_state.cine_pdf,
+                "fetal_hc_cine_report.pdf",
+                "application/pdf",
+                use_container_width=True,
+                key="dl_cine_c",
             )
 
 

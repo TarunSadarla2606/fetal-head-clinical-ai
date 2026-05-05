@@ -19,6 +19,9 @@ matplotlib>=3.7.0
 # Report generation
 reportlab>=4.0.0
 
+# DICOM Structured Report export (Batch 7)
+pydicom>=2.4.0
+
 # LLM integration
 anthropic>=0.20.0
 

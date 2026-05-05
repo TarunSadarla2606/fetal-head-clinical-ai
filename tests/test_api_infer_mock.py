@@ -31,7 +31,7 @@ def _mock_prediction() -> dict:
         "hc_mm": 274.3,
         "ga_str": "28w 1d",
         "ga_weeks": 28.14,
-        "trimester": "Mid (20–30w)",
+        "trimester": "Third trimester (≥28w)",
         "reliability": 0.95,
         "hc_std_mm": 0.8,
         "confidence_label": "HIGH CONFIDENCE",
@@ -90,7 +90,7 @@ def test_infer_hc_and_ga_in_response():
         ).json()
     assert abs(data["hc_mm"] - 274.3) < 0.01
     assert data["ga_str"] == "28w 1d"
-    assert data["trimester"] == "Mid (20–30w)"
+    assert data["trimester"] == "Third trimester (≥28w)"
 
 
 def test_infer_overlay_b64_is_valid_base64():

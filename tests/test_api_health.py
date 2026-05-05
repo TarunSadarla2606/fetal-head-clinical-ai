@@ -27,7 +27,7 @@ def test_health_models_available_is_list():
 
 def test_health_version_value():
     data = client.get("/health").json()
-    assert data["version"] == "2.3.0"
+    assert data["version"] == "2.5.0"
 
 
 def test_health_device_is_string():
