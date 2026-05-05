@@ -120,8 +120,9 @@ class TestHadlockGa:
     def test_trimester_labels(self):
         from src.evaluate import hadlock_ga
         # Boundaries: <14w → First; 14–28w → Second; ≥28w → Third
-        assert hadlock_ga(100.0)["trimester"] == "First trimester (<14w)"
-        assert hadlock_ga(250.0)["trimester"] == "Second trimester (14–28w)"
+        # HC=80mm → 13.23w (First); HC=200mm → 21.35w (Second); HC=350mm → 40.07w (Third)
+        assert hadlock_ga(80.0)["trimester"] == "First trimester (<14w)"
+        assert hadlock_ga(200.0)["trimester"] == "Second trimester (14–28w)"
         assert hadlock_ga(350.0)["trimester"] == "Third trimester (≥28w)"
 
 
