@@ -364,8 +364,8 @@ def _build_footer_text(report) -> str:
     return f"Patient: {name}  ·  Accession: {acc}"
 
 
-def _clinical_interpretation(model_name: str, elapsed_ms: float) -> str:
-    """Plain-English interpretation of the AI System Validation metrics.
+def _clinical_interpretation_body(model_name: str, elapsed_ms: float) -> str:
+    """Plain-English interpretation body (no leading heading).
 
     Targeted at clinicians, hospital procurement, and lay stakeholders who
     don't read raw Dice / MAE / GMAC numbers fluently. Static (single-frame)
@@ -430,7 +430,17 @@ def _clinical_interpretation(model_name: str, elapsed_ms: float) -> str:
             "accuracy and a smaller footprint for resource-constrained settings."
         )
 
-    return f"<b>Interpretation for clinicians.</b> {capability} {stability} {deployment}"
+    return f"{capability} {stability} {deployment}"
+
+
+def _clinical_interpretation(model_name: str, elapsed_ms: float) -> str:
+    """Plain-English summary headed with 'Interpretation for clinicians.'.
+
+    Used by single-model `_section_ai_performance`. The combined report
+    re-uses `_clinical_interpretation_body()` directly so it can prefix
+    each model's paragraph with the model name instead of the section
+    heading."""
+    return f"<b>Interpretation for clinicians.</b> {_clinical_interpretation_body(model_name, elapsed_ms)}"
 
 
 # ── Utility functions ───────────────────────────────────────────────────────────
@@ -2947,6 +2957,22 @@ def _section_combined_performance(story, st, results):
             st["footnote"],
         )
     )
+
+    # Plain-English interpretation per model — same content as the
+    # single-model AI System Validation paragraph, prefixed with each
+    # model's short name so the reader can map the row above to the prose.
+    story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph("<b>Interpretation for clinicians.</b>", st["body"]))
+    for r in results:
+        name = r.get("model_name") or r.get("model", "—")
+        elapsed = r.get("elapsed_ms") or 0.0
+        story.append(Spacer(1, 1.5 * mm))
+        story.append(
+            Paragraph(
+                f"<b>{name}.</b> {_clinical_interpretation_body(name, elapsed)}",
+                st["body"],
+            )
+        )
     story.append(Spacer(1, 2 * mm))
 
 
@@ -3078,6 +3104,10 @@ def generate_combined_report(
         getattr(report, "lmp", None) if report is not None else None,
         consensus["ga_weeks"],
     )
+    # Combined reports carry an extra block (Inter-Model Agreement table +
+    # comparison summary paragraph) on page 3, so the Clinical Interpretation
+    # heading was getting orphaned from its body. Push it to its own page.
+    story.append(PageBreak())
     _section_interpretation(
         story,
         st,
