@@ -170,3 +170,39 @@ def test_dicom_sr_sign_flips_completion_and_adds_verifier(client):
 def test_dicom_sr_404_when_report_missing(client):
     resp = client.get("/reports/rep_does_not_exist/dicom")
     assert resp.status_code == 404
+
+
+# ── 7.5  Mock C-STORE ────────────────────────────────────────────────────────
+
+
+def test_cstore_round_trip_logs_received_event(client):
+    """Generate an SR, upload it back via /cstore, confirm the log row
+    captures the SOP UIDs + patient identifiers."""
+    r = _create_report()
+    dcm_bytes = client.get(f"/reports/{r.id}/dicom").content
+
+    up = client.post("/cstore", files={"file": ("test.dcm", dcm_bytes, "application/dicom")})
+    assert up.status_code == 201
+    body = up.json()
+    assert body["status"] == "received"
+    assert body["sop_class_uid"] == "1.2.840.10008.5.1.4.1.1.88.33"
+    assert body["sop_instance_uid"]
+    assert body["patient_id"] == "MRN-001"
+    assert body["file_size"] == len(dcm_bytes)
+
+    log = client.get("/cstore/log")
+    assert log.status_code == 200
+    rows = log.json()
+    assert len(rows) == 1
+    assert rows[0]["sop_instance_uid"] == body["sop_instance_uid"]
+
+
+def test_cstore_rejects_non_dicom(client):
+    resp = client.post("/cstore", files={"file": ("oops.txt", b"plain text", "text/plain")})
+    assert resp.status_code == 400
+
+
+def test_cstore_log_limit_validation(client):
+    assert client.get("/cstore/log?limit=0").status_code == 400
+    assert client.get("/cstore/log?limit=501").status_code == 400
+    assert client.get("/cstore/log?limit=10").status_code == 200

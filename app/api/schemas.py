@@ -205,6 +205,33 @@ class ReportResponse(BaseModel):
     combined_models_json: str | None = None
 
 
+class CStoreReceiveResponse(BaseModel):
+    """Response for the mock C-STORE upload (Batch 7.5)."""
+
+    id: str
+    sop_class_uid: str | None
+    sop_instance_uid: str | None
+    patient_id: str | None
+    patient_name: str | None
+    study_date: str | None
+    file_size: int | None
+    received_at: str
+    status: str = "received"
+
+
+class CStoreLogEntryResponse(BaseModel):
+    id: str
+    sop_class_uid: str | None
+    sop_instance_uid: str | None
+    patient_id: str | None
+    patient_name: str | None
+    study_date: str | None
+    file_size: int | None
+    actor_ip: str | None
+    user_agent: str | None
+    received_at: str
+
+
 class AuditEntryResponse(BaseModel):
     id: str
     report_id: str

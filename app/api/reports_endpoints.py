@@ -31,7 +31,7 @@ import os
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 
 from app.report import (
@@ -52,6 +52,8 @@ from .schemas import (
     AuditEntryResponse,
     CreateCombinedReportRequest,
     CreateReportRequest,
+    CStoreLogEntryResponse,
+    CStoreReceiveResponse,
     ReportResponse,
     SignReportRequest,
 )
@@ -660,3 +662,70 @@ def get_report_audit_endpoint(report_id: str):
         raise HTTPException(404, "report not found")
     rows = reports_db.list_audit_for_report(report_id)
     return [AuditEntryResponse(**a.to_dict()) for a in rows]
+
+
+# ── C-STORE mock endpoints (Batch 7.5) ────────────────────────────────────────
+#
+# Real DICOM C-STORE rides on top of the DIMSE protocol over TCP/IP via a
+# pynetdicom listener. For demo purposes we expose the same intent over HTTP:
+# accept a multipart .dcm upload, parse it with pydicom, and audit-log the
+# receive event with the SOP Instance UID, patient ID and receiving IP /
+# user-agent. Suitable for interoperability testing without standing up a
+# full DIMSE peer.
+
+
+@router.post(
+    "/cstore",
+    response_model=CStoreReceiveResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Mock C-STORE receive — accept a DICOM SR upload and audit-log it",
+)
+async def cstore_receive_endpoint(
+    request: Request,
+    file: UploadFile = File(..., description="DICOM SR (.dcm) to receive"),
+):
+    """Parse the uploaded .dcm, extract SOP UIDs + patient identifiers, and
+    persist a row in cstore_log. Returns the audit entry id and the parsed
+    UIDs so the caller can confirm the receive."""
+    raw = await file.read()
+    if len(raw) < 132 or raw[128:132] != b"DICM":
+        raise HTTPException(400, "Not a valid DICOM file (DICM magic missing at offset 128)")
+    try:
+        import io as _io
+
+        import pydicom
+
+        ds = pydicom.dcmread(_io.BytesIO(raw), stop_before_pixels=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Could not parse DICOM: {exc}") from exc
+
+    sop_class_uid = str(getattr(ds, "SOPClassUID", "") or "") or None
+    sop_instance_uid = str(getattr(ds, "SOPInstanceUID", "") or "") or None
+    patient_id = str(getattr(ds, "PatientID", "") or "") or None
+    patient_name = str(getattr(ds, "PatientName", "") or "") or None
+    study_date = str(getattr(ds, "StudyDate", "") or "") or None
+
+    ip, ua = _request_meta(request)
+    entry = reports_db.add_cstore_log(
+        sop_class_uid=sop_class_uid,
+        sop_instance_uid=sop_instance_uid,
+        patient_id=patient_id,
+        patient_name=patient_name,
+        study_date=study_date,
+        file_size=len(raw),
+        actor_ip=ip,
+        user_agent=ua,
+    )
+    return CStoreReceiveResponse(**entry.to_dict(), status="received")
+
+
+@router.get(
+    "/cstore/log",
+    response_model=list[CStoreLogEntryResponse],
+    summary="List recent mock C-STORE receive events (newest first)",
+)
+def cstore_log_endpoint(limit: int = 100):
+    if not (1 <= limit <= 500):
+        raise HTTPException(400, "limit must be between 1 and 500")
+    rows = reports_db.list_cstore_log(limit=limit)
+    return [CStoreLogEntryResponse(**r.to_dict()) for r in rows]

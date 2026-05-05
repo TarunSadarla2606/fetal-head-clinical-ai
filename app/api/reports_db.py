@@ -95,6 +95,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_report ON audit_log(report_id);
+
+-- C-STORE receive log (Batch 7.5). Independent from audit_log because the
+-- received SR is not necessarily one of *our* reports — could be any
+-- DICOM SR pushed in for interoperability testing.
+CREATE TABLE IF NOT EXISTS cstore_log (
+    id               TEXT PRIMARY KEY,
+    sop_class_uid    TEXT,
+    sop_instance_uid TEXT,
+    patient_id       TEXT,
+    patient_name     TEXT,
+    study_date       TEXT,
+    file_size        INTEGER,
+    actor_ip         TEXT,
+    user_agent       TEXT,
+    received_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cstore_received ON cstore_log(received_at);
 """
 
 
@@ -555,4 +573,108 @@ def clear_all(db_path: str | None = None) -> None:
     """Test-only: wipe both tables. No-op if the DB doesn't exist."""
     with _conn(db_path) as c:
         c.execute("DELETE FROM audit_log")
+        c.execute("DELETE FROM cstore_log")
         c.execute("DELETE FROM reports")
+
+
+# ── C-STORE log (Batch 7.5) ───────────────────────────────────────────────────
+
+
+@dataclass
+class CStoreLogEntry:
+    id: str
+    sop_class_uid: str | None
+    sop_instance_uid: str | None
+    patient_id: str | None
+    patient_name: str | None
+    study_date: str | None
+    file_size: int | None
+    actor_ip: str | None
+    user_agent: str | None
+    received_at: str
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "sop_class_uid": self.sop_class_uid,
+            "sop_instance_uid": self.sop_instance_uid,
+            "patient_id": self.patient_id,
+            "patient_name": self.patient_name,
+            "study_date": self.study_date,
+            "file_size": self.file_size,
+            "actor_ip": self.actor_ip,
+            "user_agent": self.user_agent,
+            "received_at": self.received_at,
+        }
+
+
+def add_cstore_log(
+    *,
+    sop_class_uid: str | None,
+    sop_instance_uid: str | None,
+    patient_id: str | None,
+    patient_name: str | None,
+    study_date: str | None,
+    file_size: int | None,
+    actor_ip: str | None,
+    user_agent: str | None,
+    db_path: str | None = None,
+) -> CStoreLogEntry:
+    eid = f"cstore_{uuid.uuid4().hex[:16]}"
+    received = _now()
+    with _conn(db_path) as c:
+        c.execute(
+            """
+            INSERT INTO cstore_log (
+                id, sop_class_uid, sop_instance_uid, patient_id, patient_name,
+                study_date, file_size, actor_ip, user_agent, received_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                eid,
+                sop_class_uid,
+                sop_instance_uid,
+                patient_id,
+                patient_name,
+                study_date,
+                file_size,
+                actor_ip,
+                user_agent,
+                received,
+            ),
+        )
+    return CStoreLogEntry(
+        id=eid,
+        sop_class_uid=sop_class_uid,
+        sop_instance_uid=sop_instance_uid,
+        patient_id=patient_id,
+        patient_name=patient_name,
+        study_date=study_date,
+        file_size=file_size,
+        actor_ip=actor_ip,
+        user_agent=user_agent,
+        received_at=received,
+    )
+
+
+def list_cstore_log(limit: int = 100, db_path: str | None = None) -> list[CStoreLogEntry]:
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT * FROM cstore_log ORDER BY received_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        CStoreLogEntry(
+            id=r["id"],
+            sop_class_uid=r["sop_class_uid"],
+            sop_instance_uid=r["sop_instance_uid"],
+            patient_id=r["patient_id"],
+            patient_name=r["patient_name"],
+            study_date=r["study_date"],
+            file_size=r["file_size"],
+            actor_ip=r["actor_ip"],
+            user_agent=r["user_agent"],
+            received_at=r["received_at"],
+        )
+        for r in rows
+    ]
