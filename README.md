@@ -46,22 +46,35 @@ response carries an extra field:
 ```jsonc
 {
   "mode": "cine_clip",
-  "cine_overlay_gif": "data:image/gif;base64,R0lGODlh…"  // animated overlay
+  "cine_overlay_gif": "data:image/gif;base64,R0lGODlh…", // contour on every frame
+  "cine_loop_gif":    "data:image/gif;base64,R0lGODlh…", // raw loop, no prediction
+  "cine_per_frame_hc": [92.1, 92.3, null, 92.0, …],      // per-frame HC, frame-aligned
+  "cine_frame_count": 16,
+  "cine_key_frame_index": 8
 }
 ```
 
-`cine_overlay_gif` is an animated GIF showing the predicted skull contour
-drawn on **every** frame of the loop, so the boundary can be watched tracking
-the head through probe motion rather than judged from a single consensus
-still. It is a `data:` URI — nothing is written to disk, and the response
-stays self-contained.
+- **`cine_overlay_gif`** — the predicted skull contour drawn on **every** frame,
+  so the boundary can be watched tracking the head through probe motion rather
+  than judged from a single consensus still. Each frame is labelled with its
+  position in the loop (`9/16`) and its own HC, and the frame that
+  `overlay_b64` is rendered from is outlined in amber and tagged `KEY FRAME`,
+  so the animation and the still view can be reconciled.
+- **`cine_loop_gif`** — the same loop with nothing drawn on it: what the
+  temporal model was actually fed. Lets a reader judge the prediction against
+  the raw frames.
+- **`cine_per_frame_hc`** — one HC per frame, aligned with frame index (`null`
+  where HC was unmeasurable). This is what `reliability` and `hc_std_mm` are
+  computed from, so exposing it makes the stability claim checkable.
 
-The animation is budgeted to stay under ~300 KB: frames are subsampled and the
-image downscaled along a quality ladder until it fits. If it cannot be built
-the field is `null`, and clients fall back to the static `overlay_b64`.
+Both GIFs are `data:` URIs — nothing is written to disk, and the response stays
+self-contained. Each is budgeted (300 KB overlay / 200 KB loop) by subsampling
+frames and downscaling along a quality ladder until it fits; a typical response
+is ~450 KB of GIF. If an animation cannot be built its field is `null` and
+clients fall back to the static `overlay_b64`.
 
-`mode: "single_frame"` responses (`phase0` / `phase4a`) do not carry the field
-and are unchanged.
+`mode: "single_frame"` responses (`phase0` / `phase4a`) carry none of these
+fields and are unchanged.
 
 > **Note:** cine mode previously tiled 16 identical copies of the uploaded
 > frame, which made `reliability` a constant 1.0. It now measures real
@@ -80,6 +93,27 @@ and are unchanged.
 | Phase 4b | Temporal (16 frames) | Phase 2 — backbone pruned, TAM intact | **96.00** | **2.06** | 5.20M | −41.6% params |
 
 All results on HC18 test set (Radboud UMC, Netherlands). ✅ All models pass ISUOG ≤3mm threshold.
+
+---
+
+## Deployment
+
+`main` is mirrored to both Hugging Face Spaces by
+`.github/workflows/deploy-hf.yml` on every push. A Space is a **separate git
+remote**, not a GitHub mirror, so without this workflow merging to `main` does
+not update the live app.
+
+Requires one repository secret:
+
+| Secret | Value |
+|---|---|
+| `HF_TOKEN` | A Hugging Face access token with **write** permission — https://huggingface.co/settings/tokens |
+
+Optionally override the Space names with repository *variables* `HF_API_SPACE`
+and `HF_STREAMLIT_SPACE`. The workflow can also be run manually
+(**Actions → Deploy to Hugging Face Spaces → Run workflow**) to push just one
+Space. It checks out Git LFS objects so the Spaces receive real model weights
+rather than pointer files.
 
 ---
 

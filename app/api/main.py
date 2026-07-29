@@ -246,6 +246,10 @@ def infer(
     # motion. Tiling identical copies (the previous behaviour) made
     # `reliability` a meaningless constant 1.0 and left nothing to animate.
     cine_overlay_gif: str | None = None
+    cine_loop_gif: str | None = None
+    cine_per_frame_hc: list[float | None] | None = None
+    cine_frame_count: int | None = None
+    cine_key_frame_index: int | None = None
     if isinstance(model, TemporalFetaSegNet):
         clip_frames = cine.synthesize_cine_frames(img_gray, n_frames=N_FRAMES)
         result = inference_wrapper.predict_cine_clip(
@@ -254,10 +258,19 @@ def infer(
             pixel_spacing_mm=pixel_spacing_mm,
             threshold=threshold,
         )
+        loop_frames = result.get("frames") or clip_frames
+        cine_per_frame_hc = result.get("per_frame_hc_aligned")
+        cine_frame_count = len(loop_frames)
+        cine_key_frame_index = result.get("key_frame_index")
         cine_overlay_gif = cine.build_overlay_gif(
-            frames=result.get("frames") or clip_frames,
+            frames=loop_frames,
             masks=result.get("per_frame_masks") or [],
+            per_frame_hc=cine_per_frame_hc,
+            key_frame_index=cine_key_frame_index,
         )
+        # The unannotated loop the model was actually fed — shown alongside the
+        # overlay so the prediction can be judged against the raw frames.
+        cine_loop_gif = cine.build_loop_gif(frames=loop_frames)
     else:
         result = inference_wrapper.predict_single_frame(
             model=model,
@@ -308,6 +321,10 @@ def infer(
         mask_b64=mask_b64,
         overlay_b64=overlay_b64,
         cine_overlay_gif=cine_overlay_gif,
+        cine_loop_gif=cine_loop_gif,
+        cine_per_frame_hc=cine_per_frame_hc,
+        cine_frame_count=cine_frame_count,
+        cine_key_frame_index=cine_key_frame_index,
     )
 
 

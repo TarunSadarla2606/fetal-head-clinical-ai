@@ -39,13 +39,22 @@ except ImportError as _exc:  # flat import — Streamlit runs with app/ on sys.p
 log = logging.getLogger(__name__)
 
 # ── GIF budget ────────────────────────────────────────────────────────────────
-# The overlay GIF rides inside the /infer JSON response, so it has a hard
-# ceiling. These are the knobs build_overlay_gif turns down, in order, until
-# the payload fits.
+# The GIFs ride inside the /infer JSON response, so they have a hard ceiling.
+# These are the knobs the builders turn down, in order, until the payload fits.
 MAX_GIF_FRAMES = 24  # never animate more than this many frames
 MAX_GIF_BYTES = 300_000  # ~300 KB of GIF → ~400 KB as base64
 DEFAULT_FPS = 8
 GIF_COLORS = 64  # palette size; 64 is indistinguishable from 256 here
+
+# /infer returns two animations (the overlaid loop and the raw synthesised
+# loop). The overlay is the one a reader actually studies, so it keeps the
+# larger share; the raw loop is context and can afford to be smaller.
+# Burned-in labels cost real bytes (sharp bright text is poor LZW input), so
+# these are sized to keep both animations at 256 px rather than letting the
+# ladder drop them to 192 px. Combined ~500 KB raw / ~670 KB base64, which is
+# a comfortable one-off per analysis against Vercel's 4.5 MB response cap.
+OVERLAY_GIF_BYTES = 300_000
+LOOP_GIF_BYTES = 200_000
 
 # Quality ladder, walked in order until the payload fits MAX_GIF_BYTES. Width
 # comes down first (the receiving panel is ~288 px, so 256 already displays
@@ -174,9 +183,7 @@ def make_contour_overlay(frame_gray: np.ndarray, mask: np.ndarray) -> np.ndarray
 
     mask_u8 = (np.asarray(mask) > 0).astype(np.uint8)
     if mask_u8.shape != rgb.shape[:2]:
-        mask_u8 = cv2.resize(
-            mask_u8, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST
-        )
+        mask_u8 = cv2.resize(mask_u8, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
     if not mask_u8.any():
         return rgb
 
@@ -187,6 +194,53 @@ def make_contour_overlay(frame_gray: np.ndarray, mask: np.ndarray) -> np.ndarray
 
     contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(out, contours, -1, CONTOUR_RGB, CONTOUR_THICKNESS)
+    return out
+
+
+# ── frame annotation ──────────────────────────────────────────────────────────
+
+_LABEL_RGB = (225, 235, 240)
+_KEY_RGB = (255, 205, 70)  # amber, distinct from the cyan-green contour
+_FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
+def annotate_frame(
+    rgb: np.ndarray,
+    index: int,
+    total: int,
+    hc_mm: float | None = None,
+    is_key_frame: bool = False,
+) -> np.ndarray:
+    """Burn a frame counter, the frame's own HC, and a key-frame marker in.
+
+    Labels are drawn at full resolution *before* downscaling so they stay
+    legible after the size ladder shrinks the animation. Tying each frame to
+    its own HC is the point of the animation: it shows whether the measurement
+    holds steady as the probe drifts, not just that a contour is present.
+    """
+    out = rgb.copy()
+    h = out.shape[0]
+
+    # Dark scrim along the bottom so text reads over bright speckle.
+    band = out[h - 26 : h, :].astype(np.float32) * 0.35
+    out[h - 26 : h, :] = band.astype(np.uint8)
+
+    cv2.putText(out, f"{index + 1}/{total}", (8, h - 8), _FONT, 0.45, _LABEL_RGB, 1, cv2.LINE_AA)
+
+    if hc_mm is not None:
+        text = f"HC {hc_mm:.1f} mm"
+        (tw, _), _ = cv2.getTextSize(text, _FONT, 0.45, 1)
+        cv2.putText(
+            out, text, (out.shape[1] - tw - 8, h - 8), _FONT, 0.45, _LABEL_RGB, 1, cv2.LINE_AA
+        )
+
+    if is_key_frame:
+        # Amber border + tag marks the frame the static overlay still comes
+        # from, so the animation and the single-image view are reconcilable.
+        cv2.rectangle(out, (0, 0), (out.shape[1] - 1, out.shape[0] - 1), _KEY_RGB, 2)
+        cv2.putText(out, "KEY FRAME", (8, 18), _FONT, 0.42, _KEY_RGB, 1, cv2.LINE_AA)
+
+    return out
     return out
 
 
@@ -237,14 +291,76 @@ def _encode_gif(frames_rgb: list[np.ndarray], width: int, fps: int) -> bytes:
     return buf.getvalue()
 
 
+def _encode_to_data_uri(
+    rendered: list[np.ndarray], fps: int, max_bytes: int, max_frames: int
+) -> str:
+    """Walk the quality ladder until the encoded GIF fits ``max_bytes``.
+
+    If even the lowest rung overshoots the GIF is shipped anyway — an oversized
+    animation beats none, and the ladder floor is well inside any sane response
+    limit.
+    """
+    data = b""
+    for width, frame_cap in _LADDER:
+        data = _encode_gif(_subsample(rendered, min(frame_cap, max_frames)), width, fps)
+        if len(data) <= max_bytes:
+            break
+    else:
+        log.warning(
+            "cine: GIF is %d bytes, over the %d budget at the lowest rung",
+            len(data),
+            max_bytes,
+        )
+    return "data:image/gif;base64," + base64.b64encode(data).decode("ascii")
+
+
+def build_loop_gif(
+    frames: list[np.ndarray],
+    fps: int = DEFAULT_FPS,
+    max_frames: int = MAX_GIF_FRAMES,
+    max_bytes: int = LOOP_GIF_BYTES,
+) -> str | None:
+    """Encode the raw synthesised cine-loop (no overlay) as a GIF data URI.
+
+    This is the loop the Streamlit cine tab shows: what the temporal model was
+    actually fed, with no prediction drawn on it. Useful as an unannotated
+    reference next to the overlaid version. Returns ``None`` rather than
+    raising, same contract as ``build_overlay_gif``.
+    """
+    try:
+        if not frames or len(frames) < 2:
+            return None
+        picked = _subsample(list(frames), max_frames)
+        rendered: list[np.ndarray] = []
+        for i, frame in enumerate(picked):
+            try:
+                gray = _smooth_for_display(np.asarray(frame, dtype=np.uint8))
+                rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+                rendered.append(annotate_frame(rgb, i, len(picked)))
+            except Exception:  # noqa: BLE001
+                log.warning("cine loop: frame render failed, skipping", exc_info=True)
+        if len(rendered) < 2:
+            return None
+        return _encode_to_data_uri(rendered, fps, max_bytes, max_frames)
+    except Exception:  # noqa: BLE001 — the animation is a nicety, never a 500
+        log.warning("cine loop: GIF build failed", exc_info=True)
+        return None
+
+
 def build_overlay_gif(
     frames: list[np.ndarray],
     masks: list[np.ndarray],
     fps: int = DEFAULT_FPS,
     max_frames: int = MAX_GIF_FRAMES,
-    max_bytes: int = MAX_GIF_BYTES,
+    max_bytes: int = OVERLAY_GIF_BYTES,
+    per_frame_hc: list[float | None] | None = None,
+    key_frame_index: int | None = None,
 ) -> str | None:
     """Overlay each mask on its frame and encode the loop as a GIF data URI.
+
+    Each frame is labelled with its position in the loop and its own HC, and
+    the frame the static ``overlay_b64`` still comes from is marked, so the
+    animation and the single-image view can be reconciled.
 
     Returns ``data:image/gif;base64,...`` or ``None`` when there is nothing
     worth animating (no frames, a single frame, or encoding failed). Callers
@@ -255,21 +371,31 @@ def build_overlay_gif(
         if not frames or not masks:
             return None
 
-        # Pair frames with masks; a short mask list (a frame whose HC/mask
-        # extraction failed upstream) just means those frames animate bare.
-        pairs = [(frames[i], masks[i] if i < len(masks) else None) for i in range(len(frames))]
+        # Pair each frame with its mask, its own HC, and whether it is the key
+        # frame — carried through subsampling so labels never drift off-frame.
+        # A short mask/HC list (extraction failed upstream) degrades to bare.
+        items = [
+            (
+                frames[i],
+                masks[i] if i < len(masks) else None,
+                (per_frame_hc[i] if per_frame_hc and i < len(per_frame_hc) else None),
+                i == key_frame_index,
+            )
+            for i in range(len(frames))
+        ]
 
         # A one-frame "loop" is a still image — the caller already has
         # overlay_b64 for that, so don't pay the payload cost twice.
-        if len(pairs) < 2:
+        if len(items) < 2:
             return None
 
-        pairs = _subsample(pairs, max_frames)
+        items = _subsample(items, max_frames)
 
         rendered: list[np.ndarray] = []
-        for frame, mask in pairs:
+        for i, (frame, mask, hc, is_key) in enumerate(items):
             try:
-                rendered.append(make_contour_overlay(_smooth_for_display(frame), mask))
+                base = make_contour_overlay(_smooth_for_display(frame), mask)
+                rendered.append(annotate_frame(base, i, len(items), hc, is_key))
             except Exception:  # noqa: BLE001 — one bad frame must not kill the loop
                 log.warning("cine overlay: frame render failed, using raw frame", exc_info=True)
                 try:
@@ -282,22 +408,7 @@ def build_overlay_gif(
         if len(rendered) < 2:
             return None
 
-        # Walk the quality ladder until the payload fits. If even the last rung
-        # overshoots we ship it anyway — an oversized animation is better than
-        # none, and the ladder's floor is well inside any sane response limit.
-        data = b""
-        for width, frame_cap in _LADDER:
-            data = _encode_gif(_subsample(rendered, min(frame_cap, max_frames)), width, fps)
-            if len(data) <= max_bytes:
-                break
-        else:
-            log.warning(
-                "cine overlay: GIF is %d bytes, over the %d budget at the lowest rung",
-                len(data),
-                max_bytes,
-            )
-
-        return "data:image/gif;base64," + base64.b64encode(data).decode("ascii")
+        return _encode_to_data_uri(rendered, fps, max_bytes, max_frames)
     except Exception:  # noqa: BLE001 — the animation is a nicety, never a 500
         log.warning("cine overlay: GIF build failed", exc_info=True)
         return None

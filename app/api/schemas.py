@@ -49,9 +49,36 @@ class InferResponse(BaseModel):
         default=None,
         description=(
             "Animated GIF as a `data:image/gif;base64,...` URI showing the predicted "
-            "segmentation contour on every frame of the cine-loop. Populated only when "
+            "segmentation contour on every frame of the cine-loop, each frame labelled "
+            "with its index and its own HC, and the key frame marked. Populated only when "
             "`mode == 'cine_clip'` (temporal variants phase2 / phase4b); null otherwise, "
             "and null if the animation could not be built."
+        ),
+    )
+    cine_loop_gif: str | None = Field(
+        default=None,
+        description=(
+            "Animated GIF `data:` URI of the raw synthesised cine-loop with no prediction "
+            "drawn on it — what the temporal model was actually fed. Same null semantics "
+            "as `cine_overlay_gif`."
+        ),
+    )
+    cine_per_frame_hc: list[float | None] | None = Field(
+        default=None,
+        description=(
+            "Per-frame HC in mm, one entry per frame of the cine-loop, aligned with frame "
+            "index. `null` entries are frames where HC could not be estimated. Drives the "
+            "HC-stability sparkline."
+        ),
+    )
+    cine_frame_count: int | None = Field(
+        default=None, description="Number of frames in the synthesised cine-loop."
+    )
+    cine_key_frame_index: int | None = Field(
+        default=None,
+        description=(
+            "Index of the frame the static `overlay_b64` still is rendered from, marked "
+            "inside `cine_overlay_gif`."
         ),
     )
 
