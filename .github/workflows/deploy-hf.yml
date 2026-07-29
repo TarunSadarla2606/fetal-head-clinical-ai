@@ -88,27 +88,62 @@ jobs:
           # one-commit snapshot is what it actually wants — and it keeps the
           # Space repo small.
           git checkout --orphan hf-deploy
-          # Emptying the index first is what makes the conversion happen. A
-          # plain `git add -A` sees byte-identical content and skips the clean
-          # filter, leaving 4a/4b as raw blobs — verified locally, it does not
-          # work. Re-adding from an empty index forces every path through its
-          # filter.
+
+          # HF rejects *binary* files that are not in LFS/Xet, not just large
+          # ones — the 10 MiB rule caught the .pth weights, and a separate rule
+          # (~100 KB) caught demo_subjects/*.png. Declare LFS for every binary
+          # extension in the snapshot rather than chasing thresholds. This is
+          # appended here, not committed to the GitHub repo, because converting
+          # them upstream would require pushing LFS objects to GitHub too.
+          #
+          # Order matters: empty the index *before* editing .gitattributes, or
+          # `git rm --cached` refuses a file that differs from both the index
+          # and HEAD.
+          #
+          # Emptying the index is also what makes the conversion happen at all.
+          # A plain `git add -A` sees byte-identical content and skips the clean
+          # filter, leaving the files as raw blobs — verified locally, it does
+          # not work. Re-adding from an empty index forces every path through
+          # its filter.
           git rm -r -q --cached .
+          for ext in png jpg jpeg bmp tif tiff gif dcm npy npz pkl pt pdf; do
+            printf '*.%s filter=lfs diff=lfs merge=lfs -text\n' "$ext" >> .gitattributes
+          done
           git add -A
           git commit -q -m "Deploy ${GITHUB_SHA} from ${GITHUB_REPOSITORY}"
           echo "LFS objects in the snapshot:"
           git lfs ls-files
 
-          # Fail loudly if anything large slipped through as a raw blob, rather
-          # than letting HF reject it with a less obvious message.
+          # Guard: every non-empty binary blob in the snapshot must be an LFS
+          # pointer. Checking the invariant directly beats guessing HF's size
+          # thresholds, which differ per rule and are not documented precisely.
+          lfs_list="$(git lfs ls-files --name-only | sort -u)"
+          violations=0
           while read -r mode type oid size path; do
-            case "$mode$type$oid$size$path" in "") continue ;; esac
-            if [ "$size" != "-" ] && [ "$size" -gt 10485760 ]; then
-              echo "::error::$path is ${size} bytes and not LFS-tracked; HF will reject it." \
-                   "Add it to .gitattributes and re-add the file so the LFS filter applies."
-              exit 1
+            [ -z "${size:-}" ] && continue
+            [ "$size" = "-" ] && continue
+            [ "$size" -eq 0 ] && continue
+            if printf '%s\n' "$lfs_list" | grep -qxF -- "$path"; then continue; fi
+            # Binary test = a NUL byte in the first 8 KB, which is git's own
+            # heuristic. Do NOT use `grep -I`: in the C locale it reports valid
+            # UTF-8 (em dashes, arrows, emoji) as binary, which false-positives
+            # on app.py, inference.py and every notebook.
+            # `set +o pipefail` is scoped to each substitution's subshell:
+            # head -c closes the pipe early, git cat-file takes SIGPIPE, and
+            # with pipefail on that aborts the whole step (exit 141).
+            head_bytes="$(set +o pipefail; git cat-file blob "$oid" | head -c 8000 | wc -c)"
+            head_nonnul="$(set +o pipefail; git cat-file blob "$oid" | head -c 8000 | tr -d '\000' | wc -c)"
+            if [ "$head_bytes" -ne "$head_nonnul" ]; then
+              echo "::error::$path is a binary file (${size} bytes) not tracked by LFS;" \
+                   "HF will reject the push. Add its extension to the LFS list in this workflow."
+              violations=$((violations + 1))
             fi
           done < <(git ls-tree -r -l HEAD)
+          if [ "$violations" -gt 0 ]; then
+            echo "::error::$violations binary file(s) would be rejected by Hugging Face."
+            exit 1
+          fi
+          echo "Binary-file guard: OK"
 
           push_space() {
             local space="$1"
