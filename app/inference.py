@@ -905,12 +905,17 @@ def predict_cine_clip(
     uncertainty = per_bin.std(dim=0).numpy()
 
     per_frame_hc = []
+    per_frame_hc_aligned: list[float | None] = []
     per_frame_masks = []
     for t_idx in range(probs.shape[0]):
         fm = (probs[t_idx].numpy() > threshold).astype(np.uint8)
         hc = estimate_hc_mm(fm, pixel_spacing_mm)
         if hc is not None:
             per_frame_hc.append(hc)
+        # per_frame_hc is compacted (failures dropped) and feeds the reliability
+        # statistics; the aligned list keeps one slot per frame so callers can
+        # label frame i with its own HC.
+        per_frame_hc_aligned.append(hc)
         # Solid-filled copy for display only — the HC math above stays on the
         # raw thresholded mask so per-frame numbers are unchanged.
         per_frame_masks.append(fill_hollow_mask(fm * 255))
@@ -945,6 +950,10 @@ def predict_cine_clip(
         "overlay": overlay,
         "per_frame_masks": per_frame_masks,
         "frames": resized_frames,
+        "per_frame_hc_aligned": per_frame_hc_aligned,
+        # The frame the static `overlay` still is drawn from, so the UI can
+        # mark it inside the animation.
+        "key_frame_index": N_FRAMES // 2,
         "attn_weights": attn_w.cpu().numpy()[0],  # [T, T]
         "hc_mm": hc_mm,
         "ga_str": ga_str,

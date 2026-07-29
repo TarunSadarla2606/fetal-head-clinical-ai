@@ -103,8 +103,9 @@ def test_build_overlay_gif_caps_frame_count():
     masks = [_ellipse_mask() for _ in range(n)]
     data = _decode(cine.build_overlay_gif(frames, masks))
 
-    from PIL import Image
     import io
+
+    from PIL import Image
 
     im = Image.open(io.BytesIO(data))
     assert im.n_frames <= cine.MAX_GIF_FRAMES
@@ -126,3 +127,102 @@ def test_build_overlay_gif_tolerates_a_short_mask_list():
 
 def test_build_overlay_gif_never_raises_on_garbage():
     assert cine.build_overlay_gif(["not an image", "also not"], [None, None]) is None
+
+
+# ── frame annotation (labels + key-frame marker) ─────────────────────────────
+
+
+def test_annotate_frame_preserves_shape_and_dtype():
+    rgb = np.dstack([_frame()] * 3)
+    out = cine.annotate_frame(rgb, 0, 16, 245.3, False)
+    assert out.shape == rgb.shape
+    assert out.dtype == np.uint8
+
+
+def test_annotate_frame_does_not_mutate_its_input():
+    rgb = np.dstack([_frame()] * 3)
+    before = rgb.copy()
+    cine.annotate_frame(rgb, 3, 16, 245.3, True)
+    assert np.array_equal(rgb, before)
+
+
+def test_annotate_frame_key_marker_draws_amber_border():
+    rgb = np.zeros((256, 384, 3), dtype=np.uint8)
+    plain = cine.annotate_frame(rgb, 0, 16, None, False)
+    keyed = cine.annotate_frame(rgb, 0, 16, None, True)
+    # Amber border on the top row of the key frame only.
+    assert keyed[0, 200, 0] > 200 and keyed[0, 200, 2] < 150
+    assert plain[0, 200].sum() == 0
+
+
+def test_annotate_frame_without_hc_still_labels_the_index():
+    rgb = np.zeros((256, 384, 3), dtype=np.uint8)
+    out = cine.annotate_frame(rgb, 0, 16, None, False)
+    # Something was drawn in the bottom-left counter area.
+    assert out[230:, :80].any()
+
+
+# ── raw loop GIF ─────────────────────────────────────────────────────────────
+
+
+def test_build_loop_gif_returns_a_data_uri():
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=16)
+    uri = cine.build_loop_gif(frames)
+    assert uri is not None
+    assert _decode(uri).startswith(b"GIF89a")
+
+
+def test_build_loop_gif_respects_its_smaller_budget():
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=30)
+    assert len(_decode(cine.build_loop_gif(frames))) <= cine.LOOP_GIF_BYTES
+
+
+def test_build_loop_gif_returns_none_for_degenerate_input():
+    assert cine.build_loop_gif([]) is None
+    assert cine.build_loop_gif([_frame()]) is None
+
+
+def test_build_loop_gif_never_raises_on_garbage():
+    assert cine.build_loop_gif(["nope", "also nope"]) is None
+
+
+# ── overlay GIF with labels ──────────────────────────────────────────────────
+
+
+def test_overlay_gif_accepts_per_frame_hc_and_key_index():
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=16)
+    masks = [_ellipse_mask(cx=190 + i) for i in range(16)]
+    hc = [245.0 + i * 0.1 for i in range(16)]
+    uri = cine.build_overlay_gif(frames, masks, per_frame_hc=hc, key_frame_index=8)
+    assert uri is not None
+    assert len(_decode(uri)) <= cine.OVERLAY_GIF_BYTES
+
+
+def test_overlay_gif_tolerates_none_entries_in_per_frame_hc():
+    """A frame whose HC could not be estimated must not break labelling."""
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=8)
+    masks = [_ellipse_mask() for _ in range(8)]
+    hc = [245.0, None, 246.0, None, None, 247.0, None, 248.0]
+    assert cine.build_overlay_gif(frames, masks, per_frame_hc=hc, key_frame_index=4) is not None
+
+
+def test_overlay_gif_tolerates_a_short_per_frame_hc_list():
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=8)
+    masks = [_ellipse_mask() for _ in range(8)]
+    assert cine.build_overlay_gif(frames, masks, per_frame_hc=[245.0]) is not None
+
+
+def test_overlay_gif_key_index_out_of_range_is_harmless():
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=8)
+    masks = [_ellipse_mask() for _ in range(8)]
+    assert cine.build_overlay_gif(frames, masks, key_frame_index=999) is not None
+
+
+def test_both_gifs_together_stay_within_a_sane_response_budget():
+    """The two animations ship in one JSON response — cap the combined cost."""
+    frames = cine.synthesize_cine_frames(_frame(), n_frames=16)
+    masks = [_ellipse_mask(cx=190 + i) for i in range(16)]
+    total = len(_decode(cine.build_overlay_gif(frames, masks))) + len(
+        _decode(cine.build_loop_gif(frames))
+    )
+    assert total <= cine.OVERLAY_GIF_BYTES + cine.LOOP_GIF_BYTES

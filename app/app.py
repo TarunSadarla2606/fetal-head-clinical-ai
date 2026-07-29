@@ -36,7 +36,7 @@ from pathlib import Path
 import imageio
 import matplotlib.pyplot as plt
 import streamlit as st
-from cine import make_contour_overlay, synthesize_cine_frames
+from cine import annotate_frame, make_contour_overlay, synthesize_cine_frames
 from inference import (
     # constants
     DEVICE,
@@ -795,16 +795,27 @@ with tab_cine:
         # Animated overlay — the predicted contour on every frame of the loop,
         # so the reader can see the boundary track the skull through probe
         # motion rather than judging it from one consensus still.
+        _loop_frames = result_c.get("frames") or cine_frames
+        _aligned_hc = result_c.get("per_frame_hc_aligned") or []
+        _key_idx = result_c.get("key_frame_index")
         overlay_frames = [
-            make_contour_overlay(f, m)
-            for f, m in zip(result_c.get("frames") or cine_frames,
-                            result_c.get("per_frame_masks") or [])
+            annotate_frame(
+                make_contour_overlay(f, m),
+                i,
+                len(_loop_frames),
+                _aligned_hc[i] if i < len(_aligned_hc) else None,
+                i == _key_idx,
+            )
+            for i, (f, m) in enumerate(
+                zip(_loop_frames, result_c.get("per_frame_masks") or [])
+            )
         ]
         if len(overlay_frames) >= 2:
             st.markdown("#### Segmentation overlay across the clip")
             st.image(frames_to_gif(overlay_frames, fps=8),
                      caption="Predicted skull contour on each of the "
-                             f"{len(overlay_frames)} cine frames",
+                             f"{len(overlay_frames)} cine frames — each labelled with its "
+                             "own HC; the amber frame is the one the still overlay uses",
                      use_column_width=True)
             st.markdown("---")
 

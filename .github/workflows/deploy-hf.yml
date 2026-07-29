@@ -1,0 +1,102 @@
+name: Deploy to Hugging Face Spaces
+
+# Mirrors main to the two Hugging Face Spaces. A Space is a separate git
+# remote, not a GitHub mirror, so merging to main does not update it on its
+# own — without this workflow the live API keeps serving whatever was last
+# pushed to the Space by hand.
+#
+# Required repository secret:
+#   HF_TOKEN — a Hugging Face access token with **write** permission
+#              (https://huggingface.co/settings/tokens)
+#
+# Optional repository variables (fall back to the values below if unset):
+#   HF_API_SPACE       — default TarunSadarla2606/fetal-head-clinical-ai-api
+#   HF_STREAMLIT_SPACE — default TarunSadarla2606/fetal-head-clinical-ai
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which Space to push
+        required: true
+        default: both
+        type: choice
+        options: [both, api, streamlit]
+
+concurrency:
+  # Never let two pushes race the same Space remote.
+  group: deploy-hf
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Push to HF Space
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check HF_TOKEN is configured
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::HF_TOKEN secret is not set. Add a write-scoped token at" \
+                 "Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # Spaces need the real model weights, not LFS pointer files.
+          lfs: true
+          # A Space rejects a shallow history; fetch everything.
+          fetch-depth: 0
+
+      - name: Checkout LFS objects
+        run: git lfs checkout
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Push to Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          API_SPACE: ${{ vars.HF_API_SPACE || 'TarunSadarla2606/fetal-head-clinical-ai-api' }}
+          STREAMLIT_SPACE: ${{ vars.HF_STREAMLIT_SPACE || 'TarunSadarla2606/fetal-head-clinical-ai' }}
+          TARGET: ${{ github.event.inputs.target || 'both' }}
+        run: |
+          set -euo pipefail
+
+          push_space() {
+            local space="$1"
+            echo "::group::Pushing to $space"
+            # Token goes in the URL, so keep it out of the log and out of
+            # .git/config on disk beyond this step.
+            git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${space}" \
+              HEAD:refs/heads/main 2>&1 | sed "s|${HF_TOKEN}|***|g"
+            echo "::endgroup::"
+          }
+
+          case "$TARGET" in
+            api)       push_space "$API_SPACE" ;;
+            streamlit) push_space "$STREAMLIT_SPACE" ;;
+            both)      push_space "$API_SPACE"; push_space "$STREAMLIT_SPACE" ;;
+            *) echo "::error::Unknown target '$TARGET'"; exit 1 ;;
+          esac
+
+      - name: Summary
+        env:
+          API_SPACE: ${{ vars.HF_API_SPACE || 'TarunSadarla2606/fetal-head-clinical-ai-api' }}
+          STREAMLIT_SPACE: ${{ vars.HF_STREAMLIT_SPACE || 'TarunSadarla2606/fetal-head-clinical-ai' }}
+        run: |
+          {
+            echo "### Deployed \`${GITHUB_SHA::7}\` to Hugging Face"
+            echo
+            echo "- API: https://huggingface.co/spaces/${API_SPACE}"
+            echo "- Streamlit: https://huggingface.co/spaces/${STREAMLIT_SPACE}"
+            echo
+            echo "Each Space rebuilds its container after the push; watch its"
+            echo "**Logs** tab for the build to finish before testing."
+          } >> "$GITHUB_STEP_SUMMARY"
