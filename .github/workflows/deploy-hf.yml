@@ -96,16 +96,23 @@ jobs:
           # appended here, not committed to the GitHub repo, because converting
           # them upstream would require pushing LFS objects to GitHub too.
           #
-          # Order matters: empty the index *before* editing .gitattributes, or
-          # `git rm --cached` refuses a file that differs from both the index
-          # and HEAD.
+          # Emptying the index is what makes the conversion happen at all. A
+          # plain `git add -A` sees byte-identical content and skips the clean
+          # filter, leaving the files as raw blobs — verified, it does not work.
+          # Re-adding from an empty index forces every path through its filter.
           #
-          # Emptying the index is also what makes the conversion happen at all.
-          # A plain `git add -A` sees byte-identical content and skips the clean
-          # filter, leaving the files as raw blobs — verified locally, it does
-          # not work. Re-adding from an empty index forces every path through
-          # its filter.
-          git rm -r -q --cached .
+          # Use read-tree rather than `git rm -r --cached .`: rm refuses to act
+          # on a path whose staged content differs from both the file and HEAD,
+          # which is exactly the state 4a/4b are in here (HEAD has a raw blob,
+          # the *.pth filter cleans the working file to a pointer). That aborted
+          # deploy run #3. read-tree empties the index unconditionally and never
+          # touches the working tree.
+          #
+          # Note this only reproduces once git's stat cache is invalidated — a
+          # plain fresh checkout hides the discrepancy because git trusts stat
+          # info and skips the filter, but `git lfs checkout` touches the files
+          # and forces the comparison. Simulate with `touch *.pth` when testing.
+          git read-tree --empty
           for ext in png jpg jpeg bmp tif tiff gif dcm npy npz pkl pt pdf; do
             printf '*.%s filter=lfs diff=lfs merge=lfs -text\n' "$ext" >> .gitattributes
           done

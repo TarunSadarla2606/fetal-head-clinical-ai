@@ -147,10 +147,21 @@ Squashing also sidesteps the history problem: the hook scans the whole push, so
 the old raw-blob commits would keep failing it however clean the tip is. A Space
 is a deployment target, not a history archive.
 
-The extension list is appended to `.gitattributes` **in CI only**, after the
-index is emptied — editing it before `git rm --cached` makes that command refuse
-the file, and committing the rules upstream would require pushing PNG LFS
-objects to GitHub too.
+The extension list is appended to `.gitattributes` **in CI only** — committing
+the rules upstream would require pushing PNG LFS objects to GitHub too.
+
+The index is emptied with `git read-tree --empty`, not `git rm -r --cached .`.
+`rm` refuses to act on a path whose staged content differs from both the file
+and HEAD, which is precisely the state the `4a`/`4b` weights are in (HEAD holds
+a raw blob; the `*.pth` filter cleans the working file to a pointer). That
+aborted deploy run #3. `read-tree` empties the index unconditionally and leaves
+the working tree alone.
+
+That failure only reproduces once git's stat cache is invalidated: a plain fresh
+checkout hides the discrepancy because git trusts stat info and skips the clean
+filter, while `git lfs checkout` in CI touches the files and forces the
+comparison. When testing this workflow locally, `touch *.pth` after checkout to
+recreate the CI state — otherwise the bug is invisible.
 
 The guard detects binary content by looking for a **NUL byte in the first 8 KB**,
 which is git's own heuristic. It deliberately does *not* use `grep -I`: in the C
