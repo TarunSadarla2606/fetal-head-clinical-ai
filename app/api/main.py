@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from PIL import Image
 
+from app import cine
 from app.inference import N_FRAMES, TemporalFetaSegNet
 
 from . import (
@@ -239,14 +240,23 @@ def infer(
 
     val_result = inference_wrapper.validate_input(img_gray)
 
-    # Temporal models expect a 5-D clip [B, T, C, H, W]. Tile the single frame
-    # so single-image demo subjects work with phase2 and phase4b.
+    # Temporal models expect a 5-D clip [B, T, C, H, W]. Synthesise one from
+    # the single uploaded frame with Pseudo-LDDM v2 — the same loop the
+    # Streamlit cine tab builds — so phase2/phase4b see genuine inter-frame
+    # motion. Tiling identical copies (the previous behaviour) made
+    # `reliability` a meaningless constant 1.0 and left nothing to animate.
+    cine_overlay_gif: str | None = None
     if isinstance(model, TemporalFetaSegNet):
+        clip_frames = cine.synthesize_cine_frames(img_gray, n_frames=N_FRAMES)
         result = inference_wrapper.predict_cine_clip(
             model=model,
-            frames=[img_gray] * N_FRAMES,
+            frames=clip_frames,
             pixel_spacing_mm=pixel_spacing_mm,
             threshold=threshold,
+        )
+        cine_overlay_gif = cine.build_overlay_gif(
+            frames=result.get("frames") or clip_frames,
+            masks=result.get("per_frame_masks") or [],
         )
     else:
         result = inference_wrapper.predict_single_frame(
@@ -297,6 +307,7 @@ def infer(
         ood_reasons=val_result["warnings"],
         mask_b64=mask_b64,
         overlay_b64=overlay_b64,
+        cine_overlay_gif=cine_overlay_gif,
     )
 
 

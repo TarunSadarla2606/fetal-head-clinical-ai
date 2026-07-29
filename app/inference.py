@@ -905,11 +905,15 @@ def predict_cine_clip(
     uncertainty = per_bin.std(dim=0).numpy()
 
     per_frame_hc = []
+    per_frame_masks = []
     for t_idx in range(probs.shape[0]):
         fm = (probs[t_idx].numpy() > threshold).astype(np.uint8)
         hc = estimate_hc_mm(fm, pixel_spacing_mm)
         if hc is not None:
             per_frame_hc.append(hc)
+        # Solid-filled copy for display only — the HC math above stays on the
+        # raw thresholded mask so per-frame numbers are unchanged.
+        per_frame_masks.append(fill_hollow_mask(fm * 255))
 
     hc_mm = estimate_hc_mm(consensus, pixel_spacing_mm)
     ga_weeks, ga_str, trimester = None, None, "Unknown"
@@ -929,12 +933,18 @@ def predict_cine_clip(
     mid_frame = cv2.resize(frames[N_FRAMES // 2], (INPUT_W, INPUT_H))
     overlay = make_overlay(mid_frame, consensus)
 
+    # Frames as the model actually saw them, at network resolution — paired
+    # 1:1 with per_frame_masks so callers can render an animated overlay.
+    resized_frames = [cv2.resize(f, (INPUT_W, INPUT_H)) for f in frames]
+
     return {
         "consensus_mask": consensus,
         "mask": consensus,  # alias for unified downstream code
         "prob_map": mean_prob,
         "uncertainty": uncertainty,
         "overlay": overlay,
+        "per_frame_masks": per_frame_masks,
+        "frames": resized_frames,
         "attn_weights": attn_w.cpu().numpy()[0],  # [T, T]
         "hc_mm": hc_mm,
         "ga_str": ga_str,

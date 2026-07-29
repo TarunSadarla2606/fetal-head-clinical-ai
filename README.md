@@ -35,6 +35,39 @@ This Space exposes a FastAPI inference server:
 | POST | `/infer` | Fetal head HC measurement |
 | GET | `/api/docs` | Interactive Swagger UI |
 
+### Cine mode returns an animated overlay
+
+Selecting a temporal variant (`phase2` / `phase4b`) puts `/infer` in cine mode.
+The single uploaded frame is expanded into a 16-frame cine-loop with
+Pseudo-LDDM v2 (Ornstein-Uhlenbeck probe motion + Rician speckle + depth
+attenuation), the temporal model runs over the whole sequence, and the
+response carries an extra field:
+
+```jsonc
+{
+  "mode": "cine_clip",
+  "cine_overlay_gif": "data:image/gif;base64,R0lGODlh…"  // animated overlay
+}
+```
+
+`cine_overlay_gif` is an animated GIF showing the predicted skull contour
+drawn on **every** frame of the loop, so the boundary can be watched tracking
+the head through probe motion rather than judged from a single consensus
+still. It is a `data:` URI — nothing is written to disk, and the response
+stays self-contained.
+
+The animation is budgeted to stay under ~300 KB: frames are subsampled and the
+image downscaled along a quality ladder until it fits. If it cannot be built
+the field is `null`, and clients fall back to the static `overlay_b64`.
+
+`mode: "single_frame"` responses (`phase0` / `phase4a`) do not carry the field
+and are unchanged.
+
+> **Note:** cine mode previously tiled 16 identical copies of the uploaded
+> frame, which made `reliability` a constant 1.0. It now measures real
+> inter-frame agreement, so temporal-variant reliability and `hc_std_mm`
+> values differ from earlier releases.
+
 ---
 
 ## Four Model Variants
