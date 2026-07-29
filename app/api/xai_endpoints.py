@@ -68,6 +68,22 @@ def _gradcam_target_layer(model) -> torch.nn.Module:
     raise TypeError(f"Unsupported model type for GradCAM: {type(backbone).__name__}")
 
 
+def _get_cmap(name: str):
+    """Look up a colormap across matplotlib versions.
+
+    ``matplotlib.cm.get_cmap`` was deprecated in 3.7 and **removed in 3.9**.
+    requirements.txt only floors matplotlib at >=3.7, so a fresh container
+    build resolves to 3.11 and the old call raises AttributeError — which is
+    what broke both /findings/{id}/gradcam and /uncertainty with a 500 (the
+    OOD endpoint kept working because it uses no colormap). Prefer the
+    registry, fall back for matplotlib < 3.5.
+    """
+    try:
+        return matplotlib.colormaps[name]  # matplotlib >= 3.5
+    except (AttributeError, KeyError):  # pragma: no cover — very old matplotlib
+        return cm.get_cmap(name)
+
+
 def _colormap_overlay(
     img_gray: np.ndarray,
     heatmap_norm: np.ndarray,
@@ -83,7 +99,7 @@ def _colormap_overlay(
     heatmap_resized = cv2.resize(heatmap_norm, (w, h), interpolation=cv2.INTER_LINEAR)
     rgb = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB).astype(np.float32) / 255.0
 
-    cmap = cm.get_cmap(cmap_name)
+    cmap = _get_cmap(cmap_name)
     hm_rgb = cmap(np.clip(heatmap_resized, 0.0, 1.0))[:, :, :3].astype(np.float32)
 
     blended = (1 - alpha) * rgb + alpha * hm_rgb

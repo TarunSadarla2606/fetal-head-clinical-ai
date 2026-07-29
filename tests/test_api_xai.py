@@ -235,3 +235,49 @@ def test_analyze_ood_low_contrast_triggers_reason():
     report = analyze_ood(flat, _mock_validation_pass())
     categories = {r["category"] for r in report["reasons"]}
     assert "low_contrast" in categories
+
+
+# ── colormap lookup (regression: matplotlib 3.9 removed cm.get_cmap) ──────────
+#
+# The endpoint tests above mock compute_gradcam / compute_uncertainty, so the
+# colormap code they rely on never ran under test. That is how a 500 on both
+# /gradcam and /uncertainty shipped with a green suite: matplotlib.cm.get_cmap
+# was deprecated in 3.7 and removed in 3.9, requirements.txt only floors
+# matplotlib at >=3.7, and a fresh container build resolved to 3.11.
+#
+# These tests deliberately call the real code with no mocking.
+
+
+def test_get_cmap_returns_a_usable_colormap():
+    from app.api.xai_endpoints import _get_cmap
+
+    for name in ("jet", "hot"):
+        cmap = _get_cmap(name)
+        out = cmap(np.array([0.0, 0.5, 1.0]))
+        assert out.shape == (3, 4), f"{name} did not return RGBA rows"
+
+
+def test_colormap_overlay_runs_unmocked_and_preserves_shape():
+    """Exercises the exact line that 500'd — no mocks, real matplotlib."""
+    from app.api.xai_endpoints import _colormap_overlay
+
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (120, 160), dtype=np.uint8)
+    heat = rng.random((60, 80)).astype(np.float32)
+
+    out = _colormap_overlay(img, heat, cmap_name="jet", alpha=0.45)
+    assert out.shape == (120, 160, 3)
+    assert out.dtype == np.uint8
+    # A jet overlay must tint the image — a grayscale passthrough would leave
+    # all three channels identical.
+    assert not np.array_equal(out[:, :, 0], out[:, :, 2])
+
+
+def test_colormap_overlay_handles_both_named_maps():
+    from app.api.xai_endpoints import _colormap_overlay
+
+    img = np.full((32, 48), 128, dtype=np.uint8)
+    heat = np.linspace(0, 1, 32 * 48, dtype=np.float32).reshape(32, 48)
+    for name in ("jet", "hot"):
+        out = _colormap_overlay(img, heat, cmap_name=name, alpha=0.5)
+        assert out.shape == (32, 48, 3) and out.dtype == np.uint8
