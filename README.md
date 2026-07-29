@@ -117,10 +117,16 @@ rather than pointer files.
 
 ### How it handles large files
 
-Hugging Face rejects any **non-LFS file over 10 MiB anywhere in a push**, and
-this repo has two: `4a_best_pruned_ft_v10.pth` and `4b_best_pruned_ft_v10.pth`
-were committed as raw blobs before `.gitattributes` tracked `*.pth`, so the rule
-never applied to them. (`phase0` / `phase2` are proper pointers.)
+Hugging Face enforces **two** separate rules, and this repo tripped both:
+
+| Rule | Caught |
+|---|---|
+| No non-LFS file over **10 MiB** | `4a`/`4b` weights (18 MB / 21 MB), committed as raw blobs before `.gitattributes` tracked `*.pth` |
+| No **binary** file outside LFS/Xet (~100 KB) | 9 of the 12 `demo_subjects/*.png` — the 3 smallest slipped under |
+
+So the deploy declares LFS for every binary *extension* rather than chasing
+size thresholds, and a guard enforces the invariant directly: no non-empty
+binary blob may ride as a raw git object.
 
 Rather than rewrite GitHub history, the workflow builds a **single squashed
 orphan commit** and converts on the way out:
@@ -141,8 +147,15 @@ Squashing also sidesteps the history problem: the hook scans the whole push, so
 the old raw-blob commits would keep failing it however clean the tip is. A Space
 is a deployment target, not a history archive.
 
-A guard then fails the job with an explicit message if any file over 10 MiB is
-still a raw blob, rather than deferring to HF's more cryptic rejection.
+The extension list is appended to `.gitattributes` **in CI only**, after the
+index is emptied — editing it before `git rm --cached` makes that command refuse
+the file, and committing the rules upstream would require pushing PNG LFS
+objects to GitHub too.
+
+The guard detects binary content by looking for a **NUL byte in the first 8 KB**,
+which is git's own heuristic. It deliberately does *not* use `grep -I`: in the C
+locale that reports valid UTF-8 (em dashes, arrows, emoji) as binary, which
+false-positives on `app.py`, `inference.py`, and every notebook.
 
 **Adding a new large file:** make sure `.gitattributes` covers its extension. If
 it is already committed as a raw blob the deploy still handles it, but the GitHub
