@@ -115,6 +115,44 @@ and `HF_STREAMLIT_SPACE`. The workflow can also be run manually
 Space. It checks out Git LFS objects so the Spaces receive real model weights
 rather than pointer files.
 
+### How it handles large files
+
+Hugging Face rejects any **non-LFS file over 10 MiB anywhere in a push**, and
+this repo has two: `4a_best_pruned_ft_v10.pth` and `4b_best_pruned_ft_v10.pth`
+were committed as raw blobs before `.gitattributes` tracked `*.pth`, so the rule
+never applied to them. (`phase0` / `phase2` are proper pointers.)
+
+Rather than rewrite GitHub history, the workflow builds a **single squashed
+orphan commit** and converts on the way out:
+
+```bash
+git checkout --orphan hf-deploy
+git rm -r --cached .   # empties the index ...
+git add -A             # ... so every path is re-run through its clean filter
+```
+
+Emptying the index is the load-bearing part. A plain `git add -A` sees
+byte-identical content, skips the clean filter, and leaves the raw blobs in
+place — the push then fails. Re-adding from an empty index forces the `*.pth`
+LFS filter to run, so the snapshot carries pointers even though the source
+commit does not, and the objects upload to HF's LFS store on push.
+
+Squashing also sidesteps the history problem: the hook scans the whole push, so
+the old raw-blob commits would keep failing it however clean the tip is. A Space
+is a deployment target, not a history archive.
+
+A guard then fails the job with an explicit message if any file over 10 MiB is
+still a raw blob, rather than deferring to HF's more cryptic rejection.
+
+**Adding a new large file:** make sure `.gitattributes` covers its extension. If
+it is already committed as a raw blob the deploy still handles it, but the GitHub
+repo carries the full blob forever — to fix that properly, re-add it:
+
+```bash
+git rm --cached path/to/file && git add path/to/file
+git show :path/to/file | head -c 40   # -> "version https://git-lfs..."
+```
+
 ---
 
 ## Model Weights

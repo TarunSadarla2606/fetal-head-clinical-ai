@@ -69,6 +69,47 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Push a single squashed snapshot, not the GitHub history.
+          #
+          # Hugging Face runs a pre-receive hook that rejects any non-LFS file
+          # over 10 MiB *anywhere in the push*. Squashing solves two problems
+          # at once:
+          #
+          #  1. History. 4a/4b weights were committed as raw blobs before
+          #     .gitattributes tracked *.pth, so pushing full history is
+          #     rejected no matter how clean the current tree is.
+          #  2. Conversion. Re-staging here runs those files — real bytes,
+          #     materialised by the lfs:true checkout — back through the *.pth
+          #     LFS filter, so the snapshot carries pointers even though the
+          #     source commit does not, and the objects upload to HF's LFS
+          #     store on push. Nothing has to be rewritten on the GitHub side.
+          #
+          # A Space is a deployment target, not a history archive, so a
+          # one-commit snapshot is what it actually wants — and it keeps the
+          # Space repo small.
+          git checkout --orphan hf-deploy
+          # Emptying the index first is what makes the conversion happen. A
+          # plain `git add -A` sees byte-identical content and skips the clean
+          # filter, leaving 4a/4b as raw blobs — verified locally, it does not
+          # work. Re-adding from an empty index forces every path through its
+          # filter.
+          git rm -r -q --cached .
+          git add -A
+          git commit -q -m "Deploy ${GITHUB_SHA} from ${GITHUB_REPOSITORY}"
+          echo "LFS objects in the snapshot:"
+          git lfs ls-files
+
+          # Fail loudly if anything large slipped through as a raw blob, rather
+          # than letting HF reject it with a less obvious message.
+          while read -r mode type oid size path; do
+            case "$mode$type$oid$size$path" in "") continue ;; esac
+            if [ "$size" != "-" ] && [ "$size" -gt 10485760 ]; then
+              echo "::error::$path is ${size} bytes and not LFS-tracked; HF will reject it." \
+                   "Add it to .gitattributes and re-add the file so the LFS filter applies."
+              exit 1
+            fi
+          done < <(git ls-tree -r -l HEAD)
+
           push_space() {
             local space="$1"
             echo "::group::Pushing to $space"
