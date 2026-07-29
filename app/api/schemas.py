@@ -45,6 +45,15 @@ class InferResponse(BaseModel):
     ood_reasons: list[str]
     mask_b64: str = Field(description="Base64-encoded PNG of the segmentation mask")
     overlay_b64: str = Field(description="Base64-encoded PNG of the HC overlay image")
+    cine_overlay_gif: str | None = Field(
+        default=None,
+        description=(
+            "Animated GIF as a `data:image/gif;base64,...` URI showing the predicted "
+            "segmentation contour on every frame of the cine-loop. Populated only when "
+            "`mode == 'cine_clip'` (temporal variants phase2 / phase4b); null otherwise, "
+            "and null if the animation could not be built."
+        ),
+    )
 
 
 class OodReason(BaseModel):

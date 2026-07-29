@@ -36,6 +36,7 @@ from pathlib import Path
 import imageio
 import matplotlib.pyplot as plt
 import streamlit as st
+from cine import make_contour_overlay, synthesize_cine_frames
 from inference import (
     # constants
     DEVICE,
@@ -96,57 +97,16 @@ if "cine_pdf" not in st.session_state:
 
 
 # ── Pseudo-LDDM v2 cine synthesis ─────────────────────────────────────────────
+# The synthesis itself now lives in cine.py so the FastAPI /infer route builds
+# the identical loop. generate_cine stays as an alias for the call sites below.
 
-def ornstein_uhlenbeck(n, theta=0.3, sigma=1.0, rng=None):
-    if rng is None:
-        rng = np.random.default_rng()
-    x = np.zeros(n)
-    for t in range(1, n):
-        x[t] = x[t-1] + theta * (0 - x[t-1]) + sigma * rng.normal(0, 1)
-    return x
-
-def add_rician_speckle(img, std=0.08, rng=None):
-    if rng is None:
-        rng = np.random.default_rng()
-    n1 = rng.normal(0, std, img.shape).astype(np.float32)
-    n2 = rng.normal(0, std, img.shape).astype(np.float32)
-    return np.clip(np.sqrt((img + n1) ** 2 + n2 ** 2), 0, 1)
-
-def add_depth_attenuation(img, coeff=0.35):
-    h = img.shape[0]
-    return img * np.exp(-np.linspace(0, coeff, h, dtype=np.float32))[:, np.newaxis]
-
-def generate_cine(img_gray, n_frames=N_FRAMES, seed=42):
-    rng   = np.random.default_rng(seed)
-    img_r = cv2.resize(img_gray, (INPUT_W, INPUT_H))
-    img_f = img_r.astype(np.float32) / 255.0
-    tx    = ornstein_uhlenbeck(n_frames, theta=0.15, sigma=2.0,  rng=rng)
-    ty    = ornstein_uhlenbeck(n_frames, theta=0.15, sigma=1.5,  rng=rng)
-    rot   = ornstein_uhlenbeck(n_frames, theta=0.20, sigma=0.40, rng=rng)
-    if rng.random() < 0.3:
-        wf  = rng.integers(3, n_frames - 3)
-        wtx, wty = rng.normal(0, 8), rng.normal(0, 6)
-        tx[wf:] += wtx * np.exp(-0.5 * np.arange(n_frames - wf))
-        ty[wf:] += wty * np.exp(-0.5 * np.arange(n_frames - wf))
-    cx, cy = INPUT_W / 2, INPUT_H / 2
-    frames = []
-    for i in range(n_frames):
-        M = cv2.getRotationMatrix2D((cx, cy), float(rot[i]), 1.0)
-        M[0, 2] += float(tx[i])
-        M[1, 2] += float(ty[i])
-        w = cv2.warpAffine(img_f, M, (INPUT_W, INPUT_H),
-                           flags=cv2.INTER_LINEAR,
-                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        w = add_rician_speckle(w, std=float(rng.uniform(0.04, 0.10)), rng=rng)
-        w = add_depth_attenuation(w, coeff=float(rng.uniform(0.20, 0.45)))
-        frames.append((np.clip(w, 0, 1) * 255).astype(np.uint8))
-    return frames
+generate_cine = synthesize_cine_frames
 
 def frames_to_gif(frames, fps=8):
+    """Encode grayscale *or* already-RGB frames as an animated GIF."""
+    rgb = [f if f.ndim == 3 else cv2.cvtColor(f, cv2.COLOR_GRAY2RGB) for f in frames]
     buf = io.BytesIO()
-    imageio.mimsave(buf,
-                    [cv2.cvtColor(f, cv2.COLOR_GRAY2RGB) for f in frames],
-                    format="GIF", fps=fps, loop=0)
+    imageio.mimsave(buf, rgb, format="GIF", fps=fps, loop=0)
     buf.seek(0)
     return buf.read()
 
@@ -831,6 +791,22 @@ with tab_cine:
         update_session_stats(result_c["elapsed_ms"])
         st.session_state.cine_result = result_c
         st.session_state.cine_pdf = None
+
+        # Animated overlay — the predicted contour on every frame of the loop,
+        # so the reader can see the boundary track the skull through probe
+        # motion rather than judging it from one consensus still.
+        overlay_frames = [
+            make_contour_overlay(f, m)
+            for f, m in zip(result_c.get("frames") or cine_frames,
+                            result_c.get("per_frame_masks") or [])
+        ]
+        if len(overlay_frames) >= 2:
+            st.markdown("#### Segmentation overlay across the clip")
+            st.image(frames_to_gif(overlay_frames, fps=8),
+                     caption="Predicted skull contour on each of the "
+                             f"{len(overlay_frames)} cine frames",
+                     use_column_width=True)
+            st.markdown("---")
 
         st.markdown("#### Segmentation results")
         c1, c2, c3 = st.columns(3)
