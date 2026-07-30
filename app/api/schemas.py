@@ -332,4 +332,24 @@ class AskResponse(BaseModel):
     any_provisional: bool = Field(
         description="True when any supplied chunk is provisional — surface this in the UI."
     )
+    llm_error: str | None = Field(
+        default=None,
+        description="Why answer generation failed, when it did. Credential-redacted and "
+        "length-capped. Null on success or when the LLM was never called.",
+    )
     disclaimer: str
+
+
+class LlmStatusResponse(BaseModel):
+    """Diagnostic for the Claude integration — used by both Q&A and reports."""
+
+    key_present: bool
+    model: str
+    ok: bool = Field(description="True when a minimal round-trip to the API succeeded.")
+    error: str | None = Field(
+        default=None, description="Sanitized failure reason when ok is false."
+    )
+    hint: str | None = Field(
+        default=None, description="Likely remedy inferred from the error, when recognisable."
+    )
+    latency_ms: float | None = None

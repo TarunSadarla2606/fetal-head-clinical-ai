@@ -163,8 +163,11 @@ def test_ask_returns_retrieved_chunks_so_the_answer_can_be_audited():
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
         with patch(
             "app.api.rag_endpoints._call_llm",
-            return_value="Reliability is inter-frame agreement "
-            "[project_metrics.md § Temporal reliability score — definition].",
+            return_value=(
+                "Reliability is inter-frame agreement "
+                "[project_metrics.md § Temporal reliability score — definition].",
+                None,
+            ),
         ):
             r = client.post(
                 f"/findings/{fid}/ask", json={"question": "how reliable is this measurement?"}
@@ -181,7 +184,9 @@ def test_ask_reports_only_the_citations_the_answer_used():
     fid = _store_finding()
     used = "project_metrics.md § Temporal reliability score — definition"
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
-        with patch("app.api.rag_endpoints._call_llm", return_value=f"Answer text [{used}]."):
+        with patch(
+            "app.api.rag_endpoints._call_llm", return_value=(f"Answer text [{used}].", None)
+        ):
             r = client.post(
                 f"/findings/{fid}/ask", json={"question": "how reliable is this measurement?"}
             )
@@ -193,7 +198,7 @@ def test_ask_reports_only_the_citations_the_answer_used():
 def test_ask_passes_the_measurement_numbers_into_the_prompt():
     fid = _store_finding(hc_mm=245.3, ga_str="21w 0d")
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
-        with patch("app.api.rag_endpoints._call_llm", return_value="ok") as llm:
+        with patch("app.api.rag_endpoints._call_llm", return_value=("ok", None)) as llm:
             client.post(f"/findings/{fid}/ask", json={"question": "how reliable is this?"})
     prompt = llm.call_args[0][1]
     assert "245.3 mm" in prompt
@@ -204,7 +209,7 @@ def test_ask_passes_the_measurement_numbers_into_the_prompt():
 def test_ask_marks_provisional_when_any_chunk_is_unverified():
     fid = _store_finding()
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
-        with patch("app.api.rag_endpoints._call_llm", return_value="ok"):
+        with patch("app.api.rag_endpoints._call_llm", return_value=("ok", None)):
             r = client.post(
                 f"/findings/{fid}/ask",
                 json={"question": "which plane should HC be measured in?"},
@@ -229,20 +234,25 @@ def test_ask_degrades_to_excerpts_without_an_api_key():
 def test_ask_degrades_when_the_llm_call_fails():
     fid = _store_finding()
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
-        with patch("app.api.rag_endpoints._call_llm", return_value=None):
+        with patch(
+            "app.api.rag_endpoints._call_llm", return_value=(None, "APIError: upstream failure")
+        ):
             r = client.post(
                 f"/findings/{fid}/ask", json={"question": "how reliable is this measurement?"}
             )
     assert r.status_code == 200
     d = r.json()
     assert d["used_llm"] is False and d["chunks"]
+    # The reason must reach the client — a bare "generation failed" is
+    # undiagnosable, which is exactly the bug this signature change fixes.
+    assert d["llm_error"] and "upstream failure" in d["llm_error"]
 
 
 def test_ask_always_carries_the_disclaimer():
     fid = _store_finding()
     for question in ["how reliable is this measurement?", "capital of France?"]:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
-            with patch("app.api.rag_endpoints._call_llm", return_value="ok"):
+            with patch("app.api.rag_endpoints._call_llm", return_value=("ok", None)):
                 r = client.post(f"/findings/{fid}/ask", json={"question": question})
         assert "not cleared for clinical diagnosis" in r.json()["disclaimer"]
 
@@ -277,3 +287,117 @@ def test_knowledge_status_reports_the_index():
     assert d["chunk_count"] >= 15
     assert "project_metrics.md" in d["files"]
     assert isinstance(d["provisional_chunks"], list)
+
+
+# ── LLM failure diagnostics ──────────────────────────────────────────────────
+#
+# "Answer generation failed" with no reason is unactionable — the cause sat in
+# the server log where the person clicking the button cannot see it. These
+# assert the reason reaches the client, and that credentials never do.
+
+
+def test_call_llm_returns_the_error_instead_of_swallowing_it():
+    from app.api import rag_endpoints
+
+    with patch("anthropic.Anthropic") as A:
+        A.return_value.messages.create.side_effect = Exception("boom (401)")
+        answer, error = rag_endpoints._call_llm("sk-test", "prompt")
+    assert answer is None
+    assert error and "boom" in error
+
+
+def test_sanitize_error_redacts_anything_key_shaped():
+    from app.api.rag_endpoints import _sanitize_error
+
+    out = _sanitize_error(Exception("bad key sk-ant-SECRETVALUE123456 rejected"))
+    assert "SECRETVALUE" not in out
+    assert "sk-***" in out
+
+
+def test_sanitize_error_caps_length():
+    from app.api.rag_endpoints import _sanitize_error
+
+    assert len(_sanitize_error(Exception("x" * 5000))) <= 400
+
+
+def test_ask_surfaces_the_failure_reason_to_the_client():
+    fid = _store_finding()
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
+        with patch(
+            "app.api.rag_endpoints._call_llm",
+            return_value=(None, "AuthenticationError: invalid x-api-key"),
+        ):
+            r = client.post(
+                f"/findings/{fid}/ask", json={"question": "how reliable is this measurement?"}
+            )
+    d = r.json()
+    assert d["used_llm"] is False
+    assert d["llm_error"] == "AuthenticationError: invalid x-api-key"
+    assert "invalid x-api-key" in d["answer"], "reason must be visible in the answer text"
+    assert d["chunks"], "excerpts are still returned so the feature stays useful"
+
+
+def test_ask_has_no_llm_error_on_success():
+    fid = _store_finding()
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
+        with patch("app.api.rag_endpoints._call_llm", return_value=("An answer.", None)):
+            r = client.post(
+                f"/findings/{fid}/ask", json={"question": "how reliable is this measurement?"}
+            )
+    d = r.json()
+    assert d["used_llm"] is True and d["llm_error"] is None
+
+
+def test_llm_status_reports_a_missing_key():
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    with patch.dict(os.environ, env, clear=True):
+        d = client.get("/llm/status").json()
+    assert d["key_present"] is False and d["ok"] is False
+    assert "ANTHROPIC_API_KEY" in d["hint"]
+
+
+def test_llm_status_reports_success():
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
+        with patch("anthropic.Anthropic") as A:
+            A.return_value.messages.create.return_value = MagicMock()
+            d = client.get("/llm/status").json()
+    assert d["ok"] is True and d["error"] is None
+    assert d["latency_ms"] is not None
+
+
+@pytest.mark.parametrize(
+    "raised,expect_in_hint",
+    [
+        ("AuthenticationError: invalid x-api-key 401", "not valid"),
+        ("NotFoundError: 404 model does not exist", "model access"),
+        ("BillingError: insufficient credit balance", "credit"),
+        ("APIConnectionError: could not resolve host", "outbound network"),
+    ],
+)
+def test_llm_status_maps_common_failures_to_a_remedy(raised, expect_in_hint):
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
+        with patch("anthropic.Anthropic") as A:
+            A.return_value.messages.create.side_effect = Exception(raised)
+            d = client.get("/llm/status").json()
+    assert d["ok"] is False
+    assert d["hint"] and expect_in_hint in d["hint"]
+
+
+def test_llm_status_never_leaks_the_key():
+    secret = "sk-ant-DONOTLEAK0123456789"
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": secret}):
+        with patch("anthropic.Anthropic") as A:
+            A.return_value.messages.create.side_effect = Exception(f"rejected key={secret}")
+            d = client.get("/llm/status").json()
+    assert "DONOTLEAK" not in str(d)
+
+
+def test_rag_and_report_narratives_stay_on_the_same_model():
+    """They share a key and model; drift would make diagnostics misleading."""
+    import re as _re
+
+    from app.api.rag_endpoints import LLM_MODEL
+
+    report_src = (Path(__file__).resolve().parent.parent / "app" / "report.py").read_text()
+    models = set(_re.findall(r'model="(claude-[^"]+)"', report_src))
+    assert models == {LLM_MODEL}, f"report.py uses {models}, rag uses {LLM_MODEL}"
