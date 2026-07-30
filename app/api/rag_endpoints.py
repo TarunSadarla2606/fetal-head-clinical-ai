@@ -377,9 +377,7 @@ def probe_network(host: str = API_HOST, timeout: float = 5.0) -> NetworkProbe:
 
     probe = NetworkProbe(
         host=host,
-        proxy_env={
-            k: _redact_proxy(os.environ[k]) for k in _PROXY_VARS if os.environ.get(k)
-        },
+        proxy_env={k: _redact_proxy(os.environ[k]) for k in _PROXY_VARS if os.environ.get(k)},
     )
 
     try:
@@ -496,7 +494,11 @@ def llm_status(_: None = Depends(verify_api_key)) -> LlmStatusResponse:
 
         # Only worth probing when the failure could be connectivity; an auth or
         # model error says nothing about the network.
-        net = probe_network() if "connection" in detail.lower() or "timeout" in detail.lower() else None
+        net = (
+            probe_network()
+            if "connection" in detail.lower() or "timeout" in detail.lower()
+            else None
+        )
         return LlmStatusResponse(
             key_present=True,
             model=LLM_MODEL,
