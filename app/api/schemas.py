@@ -385,3 +385,36 @@ class LlmStatusResponse(BaseModel):
         default=None,
         description="Connectivity probe, run only when the API call failed.",
     )
+
+
+class ToolCallOut(BaseModel):
+    """One tool the escalation agent chose to invoke, and what came back."""
+
+    tool: str
+    reason: str = Field(description="Why the agent decided this call was warranted.")
+    result: dict = Field(default_factory=dict)
+    error: str | None = None
+
+
+class EscalationResponse(BaseModel):
+    """Verdict on whether a measurement can be trusted, with its evidence."""
+
+    finding_id: str
+    decision: str = Field(description="ACCEPT, RE_CHECK or FLAG_FOR_REVIEW.")
+    badge_color: str = Field(description="green, amber or red.")
+    rationale: str = Field(
+        description="Rule-based reasoning. Always present — it does not depend on the LLM."
+    )
+    justification: str | None = Field(
+        default=None, description="Plain-language rewrite of the rationale. Null if unavailable."
+    )
+    justification_error: str | None = Field(
+        default=None, description="Why the plain-language rewrite is missing, when it is."
+    )
+    used_llm: bool
+    signals: dict = Field(description="The uncertainty evidence the decision was made from.")
+    tool_calls: list[ToolCallOut] = Field(
+        default_factory=list, description="Empty when the agent decided without using a tool."
+    )
+    thresholds: dict = Field(description="Constants in force, so a verdict can be recomputed.")
+    disclaimer: str

@@ -34,6 +34,7 @@ from app import cine
 from app.inference import N_FRAMES, TemporalFetaSegNet
 
 from . import (
+    escalation_endpoints,
     findings_store,
     inference_wrapper,
     model_manager,
@@ -116,6 +117,7 @@ app.add_middleware(
 reports_db.init_db()
 app.include_router(reports_endpoints.router)
 app.include_router(rag_endpoints.router)
+app.include_router(escalation_endpoints.router)
 
 # Demo seed (Batch 8.2) — idempotently insert 10 fabricated patient reports
 # so reviewers see a populated Reports tab on first open. Off by default;

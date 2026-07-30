@@ -230,6 +230,76 @@ ISUOG text.
 
 ---
 
+## Agentic reliability check
+
+`POST /findings/{id}/escalate` decides whether a measurement should be trusted,
+and says why. A number with no self-assessment is the dangerous kind; deployed
+medical AI is judged as much on whether it flags its own low-confidence cases as
+on its accuracy.
+
+```jsonc
+{
+  "decision": "FLAG_FOR_REVIEW",   // ACCEPT | RE_CHECK | FLAG_FOR_REVIEW
+  "badge_color": "red",
+  "rationale": "…rule-based, always present…",
+  "justification": "Flagged for review because HC varied by 12.0 mm across frames…",
+  "signals": { "reliability": 0.80, "hc_std_mm": 12.0, "has_consistency_signal": true },
+  "tool_calls": [ /* empty when the agent decided without one */ ],
+  "thresholds": { "checkpoint_agreement_max_mm": 3.0, … }
+}
+```
+
+### What makes it agentic rather than a pipeline
+
+`RE_CHECK` is a **decision to use a tool**, not a stage. Two tools exist —
+`rerun_alternate_checkpoint` (a second full forward pass through the paired
+checkpoint) and `compare_measurements` — and they run *only* when the
+self-consistency signal is genuinely borderline. A clear accept or a clear flag
+is already decided; spending a second inference on either would be a fixed
+pipeline wearing an agent's clothes.
+
+The verdict then depends on what the tool returned: checkpoints agreeing within
+the **ISUOG 3 mm** threshold clears a borderline result; a wider disagreement is
+clinically material and escalates.
+
+### Abstention behaviour
+
+Each of these is a test, because a safety feature that fails open is worse than
+none:
+
+- **A failed re-check escalates.** The tool was reached for because the evidence
+  was thin; if it fails the evidence is still thin, so the result is referred
+  rather than accepted unverified.
+- **An unmeasurable second opinion is not agreement.** `agrees` is `null`, not
+  `true` — absence of a number must never read as confirmation.
+- **Single-frame reliability is not treated as evidence.** `predict_single_frame`
+  hard-codes `reliability = 1.0` and `hc_std_mm = 0.0` so the response shape
+  matches cine mode. Reading those as measurements would hand every static result
+  a confident green ACCEPT that nothing verified. `has_consistency_signal` marks
+  the difference, and the agent seeks independent evidence instead.
+- **The verdict never depends on the LLM.** Claude only rewrites the rationale
+  for a reader; its system prompt forbids re-deciding, inventing numbers, or
+  implying a clinical finding. A failed call costs phrasing, not the decision.
+
+### Tuning
+
+Thresholds are named constants at the top of `app/api/escalation.py`:
+`RELIABILITY_ACCEPT_MIN`, `RELIABILITY_FLAG_BELOW`, `HC_STD_ACCEPT_MAX_MM`,
+`HC_STD_FLAG_ABOVE_MM`, `CHECKPOINT_AGREEMENT_MAX_MM`. They mirror the bands in
+`confidence_label()`; keep them in step or the sidebar badge and the verdict will
+contradict each other. Every response echoes the thresholds it used, so an
+archived verdict stays recomputable after they change.
+
+Checkpoints pair within their own family (`phase0`↔`phase4a`, `phase2`↔`phase4b`)
+— comparing a static model against a temporal one would confound architecture
+with compression.
+
+The check is a separate endpoint rather than part of `/infer` because a re-check
+costs roughly what the original request did; folding it in would make every
+measurement pay for the minority that need it.
+
+---
+
 ## Four Model Variants
 
 | Phase | Type | Architecture | Dice (%) | MAE (mm) | Params | vs Baseline |
