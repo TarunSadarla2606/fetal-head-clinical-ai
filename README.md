@@ -114,9 +114,39 @@ paragraph cannot be checked, so every answer ships with the evidence it used.
   rides on every response.
 - **Degrades rather than fails.** No `ANTHROPIC_API_KEY`, or a failed call,
   returns the retrieved excerpts with `used_llm: false`.
+- **Degrading says why.** A failed call returns the reason in `llm_error`
+  rather than swallowing it. Graceful degradation that hides the cause is
+  indistinguishable from a feature that quietly never worked — which is exactly
+  what happened here: every question fell back, and the generic message gave
+  nobody anything to act on.
 
 `GET /knowledge/status` reports the index: chunk count, files, and which
 sections are still provisional.
+
+### Diagnosing a silent LLM failure
+
+`GET /llm/status` makes one minimal live call and reports what happened:
+
+```jsonc
+{
+  "key_present": true,
+  "key_prefix": "sk-ant-…",   // never the full key
+  "sdk_installed": true,
+  "model": "claude-haiku-4-5-20251001",
+  "call_ok": false,
+  "error": "AuthenticationError: invalid x-api-key",
+  "remedy": "The ANTHROPIC_API_KEY on the server is not valid…"
+}
+```
+
+Error strings are sanitised before they leave the process — anything matching
+`sk-…` is replaced with `sk-***`, and the message is capped — so the endpoint
+can be read from a browser without leaking the credential.
+
+> `app/report.py` swallows LLM errors the same way this code used to, so
+> LLM-mode report generation can also fall back to rule-based prose without
+> saying why. `/llm/status` diagnoses the shared key and client, but that
+> function has not been converted yet.
 
 ### The knowledge base
 

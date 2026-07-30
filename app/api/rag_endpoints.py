@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import findings_store, knowledge_base
 from .deps import verify_api_key
-from .schemas import AskRequest, AskResponse, RetrievedChunkOut
+from .schemas import AskRequest, AskResponse, LlmStatusResponse, RetrievedChunkOut
 
 log = logging.getLogger(__name__)
 
@@ -116,22 +117,48 @@ def _format_excerpts(hits: list[knowledge_base.RetrievedChunk]) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
-def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> str | None:
-    """Same client and failure posture as app/report.py's narrative calls."""
+LLM_MODEL = "claude-haiku-4-5-20251001"
+
+# Anything resembling an API key, redacted before an error reaches a client.
+_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
+
+
+def _sanitize_error(exc: BaseException) -> str:
+    """Render an exception for the client without leaking credentials.
+
+    Provider SDKs put request context in exception strings, so redact anything
+    key-shaped and cap the length rather than trusting it to be clean.
+    """
+    msg = f"{type(exc).__name__}: {exc}"
+    msg = _KEY_PATTERN.sub("sk-***", msg)
+    return msg[:400]
+
+
+def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> tuple[str | None, str | None]:
+    """Call Claude. Returns ``(answer, error)`` — exactly one is non-None.
+
+    Same client and model as app/report.py's narrative calls, but the error is
+    returned rather than only logged. Swallowing it silently is why "Answer
+    generation failed" gave no clue what to fix: the reason sat in the server
+    log where the person hitting the button cannot see it.
+    """
     try:
         import anthropic
 
         client = anthropic.Anthropic(api_key=api_key)
         r = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=LLM_MODEL,
             max_tokens=max_tokens,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
-        return r.content[0].text.strip()
-    except Exception:  # noqa: BLE001 — mirrors report.py: degrade, never 500
-        log.warning("rag: LLM call failed", exc_info=True)
-        return None
+        if not r.content:
+            return None, "Empty response: the model returned no content blocks."
+        return r.content[0].text.strip(), None
+    except Exception as exc:  # noqa: BLE001 — degrade, never 500
+        detail = _sanitize_error(exc)
+        log.warning("rag: LLM call failed — %s", detail, exc_info=True)
+        return None, detail
 
 
 @router.post(
@@ -217,16 +244,18 @@ def ask_about_finding(
         "Answer using only the excerpts and the measurement above, citing the excerpts "
         "you rely on by their exact bracketed labels."
     )
-    answer = _call_llm(api_key, prompt)
+    answer, llm_error = _call_llm(api_key, prompt)
 
     if answer is None:
         return AskResponse(
             finding_id=finding_id,
             question=question,
             answer=(
-                "Answer generation failed. The reference material matching your question "
-                "is shown below and can be read directly."
+                "Answer generation failed, so the reference material matching your question "
+                "is shown below and can be read directly. Reason: "
+                f"{llm_error or 'unknown'}"
             ),
+            llm_error=llm_error,
             citations=[c.citation for c in chunks_out],
             chunks=chunks_out,
             grounded=True,
@@ -264,3 +293,84 @@ def knowledge_status(_: None = Depends(verify_api_key)) -> dict:
         "files": sorted({c.source_file for c in r.chunks}),
         "provisional_chunks": sorted(c.citation for c in r.chunks if c.provisional),
     }
+
+
+def _diagnose(error: str) -> str | None:
+    """Map a raw provider error onto the thing to actually change."""
+    low = error.lower()
+    if "authentication" in low or "401" in low or "invalid x-api-key" in low:
+        return (
+            "The ANTHROPIC_API_KEY on the server is not valid. Regenerate it at "
+            "console.anthropic.com and update the Space secret."
+        )
+    if "not_found" in low or "404" in low or "model" in low and "does not exist" in low:
+        return (
+            f"The account behind this key cannot reach {LLM_MODEL}. Check model access, "
+            "or change LLM_MODEL in app/api/rag_endpoints.py and app/report.py."
+        )
+    if "credit" in low or "billing" in low or "quota" in low or "402" in low:
+        return "The Anthropic account has no available credit or has hit a spend limit."
+    if "rate" in low and "limit" in low or "429" in low:
+        return "Rate limited. Retry shortly; this is transient."
+    if "connection" in low or "timeout" in low or "resolve" in low or "network" in low:
+        return (
+            "The server could not reach api.anthropic.com — outbound network is blocked "
+            "or the request timed out."
+        )
+    if "modulenotfounderror" in low or "no module named" in low:
+        return "The anthropic package is not installed in the running container."
+    return None
+
+
+@router.get(
+    "/llm/status",
+    response_model=LlmStatusResponse,
+    summary="Check whether the server can actually reach the Claude API",
+)
+def llm_status(_: None = Depends(verify_api_key)) -> LlmStatusResponse:
+    """Minimal round-trip so a broken key or model shows up as a clear error.
+
+    Both the Q&A answers and the LLM report narratives use this key and model,
+    and report.py falls back to rule-based prose on failure without saying so —
+    a silent degradation. This endpoint makes that state visible.
+    """
+    import time
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return LlmStatusResponse(
+            key_present=False,
+            model=LLM_MODEL,
+            ok=False,
+            error="ANTHROPIC_API_KEY is not set in the server environment.",
+            hint="Add ANTHROPIC_API_KEY as a secret on the Space, then restart it.",
+        )
+
+    t0 = time.perf_counter()
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+        client.messages.create(
+            model=LLM_MODEL,
+            max_tokens=4,
+            messages=[{"role": "user", "content": "Reply with the single word: ok"}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        detail = _sanitize_error(exc)
+        log.warning("llm_status: probe failed — %s", detail, exc_info=True)
+        return LlmStatusResponse(
+            key_present=True,
+            model=LLM_MODEL,
+            ok=False,
+            error=detail,
+            hint=_diagnose(detail),
+            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+        )
+
+    return LlmStatusResponse(
+        key_present=True,
+        model=LLM_MODEL,
+        ok=True,
+        latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+    )
