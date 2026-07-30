@@ -281,3 +281,55 @@ class AuditEntryResponse(BaseModel):
     user_agent: str | None
     details: str | None
     timestamp: str
+
+
+# ── Retrieval-grounded Q&A ────────────────────────────────────────────────────
+
+
+class AskRequest(BaseModel):
+    question: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Free-text question about this measurement.",
+    )
+    top_k: int = Field(default=4, ge=1, le=8, description="How many reference chunks to retrieve.")
+
+
+class RetrievedChunkOut(BaseModel):
+    citation: str = Field(description="Human-readable label, e.g. 'file.md § Heading'.")
+    source_file: str
+    heading: str
+    text: str = Field(description="The chunk text the model was given, verbatim.")
+    score: float = Field(description="Cosine similarity against the question.")
+    provisional: bool = Field(
+        description="True when the chunk still carries a TODO(verbatim) marker — its "
+        "reference text has not been verified against the primary source."
+    )
+    source_note: str | None = Field(
+        default=None, description="The chunk's '> Source:' provenance line, if present."
+    )
+
+
+class AskResponse(BaseModel):
+    finding_id: str
+    question: str
+    answer: str
+    citations: list[str] = Field(
+        description="Citations the answer actually referenced, not everything retrieved."
+    )
+    chunks: list[RetrievedChunkOut] = Field(
+        description="Every chunk supplied to the model, so the answer can be checked "
+        "against its evidence."
+    )
+    grounded: bool = Field(
+        description="False when retrieval found nothing; the model is not called in that "
+        "case and the answer is a refusal."
+    )
+    used_llm: bool = Field(
+        description="False when the answer came from a fallback path (no API key, or the "
+        "LLM call failed) rather than the model."
+    )
+    any_provisional: bool = Field(
+        description="True when any supplied chunk is provisional — surface this in the UI."
+    )
+    disclaimer: str

@@ -83,6 +83,68 @@ fields and are unchanged.
 
 ---
 
+## RAG Q&A — grounded answers with citations
+
+`POST /findings/{id}/ask` answers a free-text question about a specific
+measurement using **only** the reference material in `knowledge/` plus that
+measurement's own numbers. The point is auditability: an unsourced LLM
+paragraph cannot be checked, so every answer ships with the evidence it used.
+
+```jsonc
+{
+  "answer": "Reliability is inter-frame agreement … [project_metrics.md § Temporal reliability score — definition]",
+  "citations": ["project_metrics.md § Temporal reliability score — definition"],
+  "chunks": [ /* every excerpt supplied to the model, verbatim, with scores */ ],
+  "grounded": true,        // false ⇒ nothing retrieved, model never called
+  "used_llm": true,        // false ⇒ fallback path, excerpts returned raw
+  "any_provisional": true, // a cited section is not yet verbatim-sourced
+  "disclaimer": "…not cleared for clinical diagnosis…"
+}
+```
+
+**Guarantees, each covered by a test:**
+
+- **No retrieval ⇒ no LLM call.** An off-topic question returns a refusal;
+  the model is never given the chance to answer from memory.
+- **Evidence is returned, not just cited.** `chunks` carries the full text the
+  model saw, so an answer can be checked against it.
+- **Citations reflect the answer**, not everything retrieved — only labels the
+  answer actually referenced are listed.
+- **Diagnosis is refused** in the system prompt, and the standard disclaimer
+  rides on every response.
+- **Degrades rather than fails.** No `ANTHROPIC_API_KEY`, or a failed call,
+  returns the retrieved excerpts with `used_llm: false`.
+
+`GET /knowledge/status` reports the index: chunk count, files, and which
+sections are still provisional.
+
+### The knowledge base
+
+Markdown in `knowledge/`, one retrievable chunk per `##` heading. See
+`knowledge/README.md` for the chunking rules.
+
+⚠️ Sections marked `TODO(verbatim)` are **paraphrase, not sourced guideline
+text** — deliberately avoiding specific numeric thresholds I could not verify
+against the primary document. Replace them with licensed text before relying on
+them. Those chunks are flagged `provisional` through the API and badged in the
+UI. `project_metrics.md` is derived from this repository's own source and needs
+no such caveat.
+
+### Retrieval
+
+TF-IDF over word n-grams plus a prefix-stem branch, cosine similarity,
+scikit-learn only — no new dependency, no embedding model fetched at container
+start, and a deterministic index tests can assert on. For a few dozen curated
+chunks whose key terms are rare and exact, this outperforms what a dense store
+would add. `Retriever` is a single class; swap it for an embedding backend if
+the corpus grows.
+
+The stem branch is load-bearing: without it "how **reliable** is this
+measurement" scores the **reliability** sections at zero and lands on unrelated
+ISUOG text.
+
+---
+
 ## Four Model Variants
 
 | Phase | Type | Architecture | Dice (%) | MAE (mm) | Params | vs Baseline |
