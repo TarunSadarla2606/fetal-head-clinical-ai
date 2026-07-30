@@ -340,6 +340,34 @@ class AskResponse(BaseModel):
     disclaimer: str
 
 
+class NetworkProbe(BaseModel):
+    """Layer-by-layer reachability of the Claude API host.
+
+    ``APIConnectionError`` collapses DNS failure, refused TCP, TLS interception
+    and a broken proxy into one indistinguishable message. Probing each layer
+    separately says which one actually broke.
+    """
+
+    host: str
+    dns_ok: bool | None = None
+    resolved_ips: list[str] = Field(default_factory=list)
+    tcp_ok: bool | None = None
+    tls_ok: bool | None = None
+    https_get_ok: bool | None = Field(
+        default=None,
+        description="A plain HTTPS request to the host, bypassing the SDK entirely.",
+    )
+    proxy_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Proxy-related environment variables seen by the process. "
+        "Values are redacted to scheme://host so embedded credentials cannot leak.",
+    )
+    failed_layer: str | None = Field(
+        default=None, description="First layer that failed: dns, tcp, tls or https."
+    )
+    error: str | None = None
+
+
 class LlmStatusResponse(BaseModel):
     """Diagnostic for the Claude integration — used by both Q&A and reports."""
 
@@ -353,3 +381,7 @@ class LlmStatusResponse(BaseModel):
         default=None, description="Likely remedy inferred from the error, when recognisable."
     )
     latency_ms: float | None = None
+    network: NetworkProbe | None = Field(
+        default=None,
+        description="Connectivity probe, run only when the API call failed.",
+    )

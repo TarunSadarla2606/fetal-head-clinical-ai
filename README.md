@@ -139,9 +139,39 @@ sections are still provisional.
 }
 ```
 
+When the failure looks like connectivity, the response also carries a
+`network` block that tests each layer separately:
+
+```jsonc
+{
+  "network": {
+    "host": "api.anthropic.com",
+    "dns_ok": true,
+    "resolved_ips": ["160.79.104.10"],
+    "tcp_ok": false,
+    "tls_ok": null,          // not attempted — the layer below it failed
+    "proxy_env": {"HTTPS_PROXY": "http://***@proxy:8080"},
+    "failed_layer": "tcp"
+  }
+}
+```
+
+This exists because `APIConnectionError` collapses DNS failure, a refused
+socket, TLS interception and a misconfigured proxy into the single string
+`"Connection error."` — which names none of them. `failed_layer` is the deepest
+layer that actually works, and the `https` step deliberately bypasses the
+Anthropic SDK: if raw HTTPS succeeds while the SDK fails, the fault is the
+client or its proxy handling, not the network.
+
+Proxy environment variables are reported because httpx honours them, so a stale
+`HTTPS_PROXY` breaks every call while the network itself is fine. Values are
+redacted to strip any embedded `user:password@`.
+
 Error strings are sanitised before they leave the process — anything matching
 `sk-…` is replaced with `sk-***`, and the message is capped — so the endpoint
-can be read from a browser without leaking the credential.
+can be read from a browser without leaking the credential. `_sanitize_error`
+walks the `__cause__`/`__context__` chain: the wrapper exception is often
+contentless and the real reason sits one frame down.
 
 > `app/report.py` swallows LLM errors the same way this code used to, so
 > LLM-mode report generation can also fall back to rule-based prose without

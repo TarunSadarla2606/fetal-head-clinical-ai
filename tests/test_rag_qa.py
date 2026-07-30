@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import findings_store, knowledge_base
+from app.api import findings_store, knowledge_base, rag_endpoints
 from app.api.main import app
 
 client = TestClient(app, raise_server_exceptions=False)
@@ -317,7 +317,7 @@ def test_sanitize_error_redacts_anything_key_shaped():
 def test_sanitize_error_caps_length():
     from app.api.rag_endpoints import _sanitize_error
 
-    assert len(_sanitize_error(Exception("x" * 5000))) <= 400
+    assert len(_sanitize_error(Exception("x" * 5000))) <= 600
 
 
 def test_ask_surfaces_the_failure_reason_to_the_client():
@@ -375,10 +375,13 @@ def test_llm_status_reports_success():
     ],
 )
 def test_llm_status_maps_common_failures_to_a_remedy(raised, expect_in_hint):
+    # probe_network is stubbed out: this covers the text-matching fallback, and
+    # a live probe would both reach the real network and mask _diagnose().
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
-        with patch("anthropic.Anthropic") as A:
-            A.return_value.messages.create.side_effect = Exception(raised)
-            d = client.get("/llm/status").json()
+        with patch("app.api.rag_endpoints.probe_network", return_value=None):
+            with patch("anthropic.Anthropic") as A:
+                A.return_value.messages.create.side_effect = Exception(raised)
+                d = client.get("/llm/status").json()
     assert d["ok"] is False
     assert d["hint"] and expect_in_hint in d["hint"]
 
@@ -386,9 +389,10 @@ def test_llm_status_maps_common_failures_to_a_remedy(raised, expect_in_hint):
 def test_llm_status_never_leaks_the_key():
     secret = "sk-ant-DONOTLEAK0123456789"
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": secret}):
-        with patch("anthropic.Anthropic") as A:
-            A.return_value.messages.create.side_effect = Exception(f"rejected key={secret}")
-            d = client.get("/llm/status").json()
+        with patch("app.api.rag_endpoints.probe_network", return_value=None):
+            with patch("anthropic.Anthropic") as A:
+                A.return_value.messages.create.side_effect = Exception(f"rejected key={secret}")
+                d = client.get("/llm/status").json()
     assert "DONOTLEAK" not in str(d)
 
 
@@ -401,3 +405,127 @@ def test_rag_and_report_narratives_stay_on_the_same_model():
     report_src = (Path(__file__).resolve().parent.parent / "app" / "report.py").read_text()
     models = set(_re.findall(r'model="(claude-[^"]+)"', report_src))
     assert models == {LLM_MODEL}, f"report.py uses {models}, rag uses {LLM_MODEL}"
+
+
+# ── network diagnostics ──────────────────────────────────────────────────────
+#
+# The live Space reported `APIConnectionError: Connection error.` with no
+# further detail, which is unactionable. These cover the two fixes: reading the
+# chained cause, and probing each network layer separately.
+
+
+def test_sanitize_error_reports_the_chained_cause_not_just_the_wrapper():
+    """APIConnectionError stringifies to "Connection error." and nothing else."""
+
+    class APIConnectionError(Exception):
+        pass
+
+    try:
+        try:
+            raise ConnectionRefusedError(111, "Connection refused")
+        except ConnectionRefusedError as root:
+            raise APIConnectionError("Connection error.") from root
+    except APIConnectionError as exc:
+        msg = rag_endpoints._sanitize_error(exc)
+
+    assert "Connection error." in msg
+    assert "ConnectionRefusedError" in msg, "the actual reason must survive"
+    assert "Connection refused" in msg
+
+
+def test_sanitize_error_redacts_keys_anywhere_in_the_chain():
+    try:
+        try:
+            raise ValueError("auth failed for sk-ant-api03-SECRETVALUE123")
+        except ValueError as root:
+            raise RuntimeError("wrapped") from root
+    except RuntimeError as exc:
+        msg = rag_endpoints._sanitize_error(exc)
+
+    assert "SECRETVALUE123" not in msg
+    assert "sk-***" in msg
+
+
+def test_sanitize_error_survives_a_self_referential_cause_chain():
+    """A cycle must not hang the diagnostic."""
+    a = ValueError("a")
+    b = ValueError("b")
+    a.__cause__ = b
+    b.__cause__ = a
+    msg = rag_endpoints._sanitize_error(a)
+    assert "a" in msg and "b" in msg
+
+
+def test_probe_reports_dns_as_the_failed_layer_when_resolution_fails():
+    with patch("socket.getaddrinfo", side_effect=OSError("Name or service not known")):
+        probe = rag_endpoints.probe_network("api.anthropic.com")
+    assert probe.dns_ok is False
+    assert probe.failed_layer == "dns"
+    assert probe.tcp_ok is None, "layers below a failure are not attempted"
+
+
+def test_probe_reports_tcp_as_the_failed_layer_when_the_socket_is_refused():
+    with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("1.2.3.4", 443))]):
+        with patch("socket.create_connection", side_effect=ConnectionRefusedError("refused")):
+            probe = rag_endpoints.probe_network()
+    assert probe.dns_ok is True
+    assert probe.resolved_ips == ["1.2.3.4"]
+    assert probe.tcp_ok is False
+    assert probe.failed_layer == "tcp"
+
+
+def test_probe_redacts_credentials_embedded_in_a_proxy_url():
+    env = {"HTTPS_PROXY": "http://user:hunter2@proxy.internal:8080"}
+    with patch.dict(os.environ, env):
+        with patch("socket.getaddrinfo", side_effect=OSError("boom")):
+            probe = rag_endpoints.probe_network()
+    assert "hunter2" not in probe.proxy_env["HTTPS_PROXY"]
+    assert "***" in probe.proxy_env["HTTPS_PROXY"]
+
+
+def test_a_configured_proxy_is_named_as_the_prime_suspect():
+    probe = rag_endpoints.NetworkProbe(
+        host="api.anthropic.com",
+        dns_ok=True,
+        tcp_ok=False,
+        failed_layer="tcp",
+        proxy_env={"HTTPS_PROXY": "http://proxy.internal:8080"},
+    )
+    hint = rag_endpoints._diagnose_network(probe)
+    assert "proxy" in hint.lower() and "HTTPS_PROXY" in hint
+
+
+def test_working_raw_https_points_at_the_sdk_rather_than_the_network():
+    probe = rag_endpoints.NetworkProbe(
+        host="api.anthropic.com", dns_ok=True, tcp_ok=True, tls_ok=True, https_get_ok=True
+    )
+    hint = rag_endpoints._diagnose_network(probe)
+    assert "SDK" in hint
+
+
+def test_llm_status_probes_the_network_on_a_connection_error():
+    class APIConnectionError(Exception):
+        pass
+
+    fake_probe = rag_endpoints.NetworkProbe(
+        host="api.anthropic.com", dns_ok=True, tcp_ok=False, failed_layer="tcp"
+    )
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
+        with patch("anthropic.Anthropic", side_effect=APIConnectionError("Connection error.")):
+            with patch("app.api.rag_endpoints.probe_network", return_value=fake_probe) as probe:
+                r = client.get("/llm/status")
+    probe.assert_called_once()
+    d = r.json()
+    assert d["ok"] is False
+    assert d["network"]["failed_layer"] == "tcp"
+    assert "blocked at the network level" in d["hint"]
+
+
+def test_llm_status_skips_the_network_probe_for_an_auth_failure():
+    """An invalid key says nothing about connectivity — probing would mislead."""
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
+        with patch("anthropic.Anthropic", side_effect=Exception("AuthenticationError: 401")):
+            with patch("app.api.rag_endpoints.probe_network") as probe:
+                r = client.get("/llm/status")
+    probe.assert_not_called()
+    assert r.json()["network"] is None

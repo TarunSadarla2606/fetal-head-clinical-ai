@@ -28,7 +28,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import findings_store, knowledge_base
 from .deps import verify_api_key
-from .schemas import AskRequest, AskResponse, LlmStatusResponse, RetrievedChunkOut
+from .schemas import (
+    AskRequest,
+    AskResponse,
+    LlmStatusResponse,
+    NetworkProbe,
+    RetrievedChunkOut,
+)
 
 log = logging.getLogger(__name__)
 
@@ -126,12 +132,27 @@ _KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
 def _sanitize_error(exc: BaseException) -> str:
     """Render an exception for the client without leaking credentials.
 
-    Provider SDKs put request context in exception strings, so redact anything
-    key-shaped and cap the length rather than trusting it to be clean.
+    Follows the ``__cause__``/``__context__`` chain. This is load-bearing for
+    connection failures: ``anthropic.APIConnectionError`` stringifies to exactly
+    "Connection error." and puts the actual reason — refused socket, DNS
+    failure, proxy error, rejected certificate — in the chained exception.
+    Reporting only the top frame is how a diagnostic ends up saying nothing.
+
+    Provider SDKs also put request context in exception strings, so redact
+    anything key-shaped and cap the length rather than trusting it to be clean.
     """
-    msg = f"{type(exc).__name__}: {exc}"
+    parts: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(parts) < 5:
+        seen.add(id(cur))
+        text = str(cur).strip()
+        parts.append(f"{type(cur).__name__}: {text}" if text else type(cur).__name__)
+        cur = cur.__cause__ or cur.__context__
+
+    msg = " <- ".join(parts)
     msg = _KEY_PATTERN.sub("sk-***", msg)
-    return msg[:400]
+    return msg[:600]
 
 
 def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> tuple[str | None, str | None]:
@@ -322,6 +343,116 @@ def _diagnose(error: str) -> str | None:
     return None
 
 
+API_HOST = "api.anthropic.com"
+
+# Proxy settings are the classic cause of a connection failure that looks like
+# a network block: httpx honours these, so a stale value breaks every call.
+_PROXY_VARS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+def _redact_proxy(value: str) -> str:
+    """Strip any user:password@ from a proxy URL before returning it."""
+    return re.sub(r"//[^/@]*@", "//***@", value)[:120]
+
+
+def probe_network(host: str = API_HOST, timeout: float = 5.0) -> NetworkProbe:
+    """Test DNS, TCP, TLS and a plain HTTPS request against ``host``.
+
+    Each layer is attempted only if the one below it succeeded, so
+    ``failed_layer`` names the deepest layer that actually works. The HTTPS step
+    deliberately bypasses the Anthropic SDK — if raw HTTPS succeeds while the
+    SDK fails, the problem is the client or its proxy config, not the network.
+    """
+    import socket
+    import ssl
+
+    probe = NetworkProbe(
+        host=host,
+        proxy_env={k: _redact_proxy(os.environ[k]) for k in _PROXY_VARS if os.environ.get(k)},
+    )
+
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        probe.resolved_ips = sorted({i[4][0] for i in infos})
+        probe.dns_ok = True
+    except Exception as exc:  # noqa: BLE001 — a probe never raises
+        probe.dns_ok = False
+        probe.failed_layer = "dns"
+        probe.error = _sanitize_error(exc)
+        return probe
+
+    try:
+        with socket.create_connection((host, 443), timeout=timeout) as sock:
+            probe.tcp_ok = True
+            ctx = ssl.create_default_context()
+            with ctx.wrap_socket(sock, server_hostname=host):
+                probe.tls_ok = True
+    except Exception as exc:  # noqa: BLE001
+        if probe.tcp_ok is None:
+            probe.tcp_ok = False
+            probe.failed_layer = "tcp"
+        else:
+            probe.tls_ok = False
+            probe.failed_layer = "tls"
+        probe.error = _sanitize_error(exc)
+        return probe
+
+    try:
+        import httpx
+
+        # 404/401 is a fine outcome — it proves the round-trip completed.
+        httpx.get(f"https://{host}/", timeout=timeout)
+        probe.https_get_ok = True
+    except Exception as exc:  # noqa: BLE001
+        probe.https_get_ok = False
+        probe.failed_layer = "https"
+        probe.error = _sanitize_error(exc)
+
+    return probe
+
+
+def _diagnose_network(probe: NetworkProbe) -> str | None:
+    """Turn a probe result into the specific thing to change."""
+    if probe.proxy_env and probe.failed_layer in ("tcp", "tls", "https"):
+        names = ", ".join(sorted(probe.proxy_env))
+        return (
+            f"A proxy is configured in the environment ({names}) and the connection failed "
+            "past DNS. httpx routes through it, so a stale or unreachable proxy breaks every "
+            "call. Clear these variables on the Space unless the proxy is genuinely required."
+        )
+    if probe.failed_layer == "dns":
+        return f"DNS cannot resolve {probe.host} — the container has no working resolver."
+    if probe.failed_layer == "tcp":
+        return (
+            f"DNS resolved {probe.host} to {', '.join(probe.resolved_ips) or 'no address'} but "
+            "the TCP connection to port 443 was refused or dropped. Outbound HTTPS is blocked "
+            "at the network level; this is a Space/host networking setting, not a code issue."
+        )
+    if probe.failed_layer == "tls":
+        return (
+            "TCP connected but the TLS handshake failed — something is intercepting HTTPS, or "
+            "the container's CA bundle is missing or stale."
+        )
+    if probe.failed_layer == "https":
+        return "TLS succeeded but the HTTPS request failed — likely an HTTP-layer block."
+    if probe.https_get_ok:
+        return (
+            f"The network reaches {probe.host} fine — plain HTTPS succeeded while the Anthropic "
+            "SDK failed. Suspect the SDK client or its proxy handling rather than connectivity; "
+            "check the installed anthropic/httpx versions."
+        )
+    return None
+
+
 @router.get(
     "/llm/status",
     response_model=LlmStatusResponse,
@@ -358,14 +489,24 @@ def llm_status(_: None = Depends(verify_api_key)) -> LlmStatusResponse:
         )
     except Exception as exc:  # noqa: BLE001
         detail = _sanitize_error(exc)
+        elapsed = round((time.perf_counter() - t0) * 1000, 1)
         log.warning("llm_status: probe failed — %s", detail, exc_info=True)
+
+        # Only worth probing when the failure could be connectivity; an auth or
+        # model error says nothing about the network.
+        net = (
+            probe_network()
+            if "connection" in detail.lower() or "timeout" in detail.lower()
+            else None
+        )
         return LlmStatusResponse(
             key_present=True,
             model=LLM_MODEL,
             ok=False,
             error=detail,
-            hint=_diagnose(detail),
-            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+            hint=(_diagnose_network(net) if net else None) or _diagnose(detail),
+            latency_ms=elapsed,
+            network=net,
         )
 
     return LlmStatusResponse(
