@@ -11,6 +11,8 @@ POST /infer                         Single-frame HC measurement
 GET  /findings/{id}/gradcam         GradCAM++ overlay PNG (Batch 5)
 GET  /findings/{id}/uncertainty     MC uncertainty heatmap PNG (Batch 5)
 GET  /findings/{id}/ood             OOD flag + structured reasons JSON (Batch 5)
+POST /findings/{id}/ask             Retrieval-grounded Q&A with citations
+GET  /knowledge/status              Knowledge-base index status
 GET  /api/openapi.json              OpenAPI schema (auto-generated)
 """
 
@@ -35,6 +37,7 @@ from . import (
     findings_store,
     inference_wrapper,
     model_manager,
+    rag_endpoints,
     reports_db,
     reports_endpoints,
     xai_endpoints,
@@ -112,6 +115,7 @@ app.add_middleware(
 # race the schema bootstrap.
 reports_db.init_db()
 app.include_router(reports_endpoints.router)
+app.include_router(rag_endpoints.router)
 
 # Demo seed (Batch 8.2) — idempotently insert 10 fabricated patient reports
 # so reviewers see a populated Reports tab on first open. Off by default;
