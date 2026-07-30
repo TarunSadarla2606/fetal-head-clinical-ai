@@ -125,8 +125,36 @@ def _format_excerpts(hits: list[knowledge_base.RetrievedChunk]) -> str:
 
 LLM_MODEL = "claude-haiku-4-5-20251001"
 
-# Anything resembling an API key, redacted before an error reaches a client.
-_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
+# Anything resembling an API key. Whitespace *inside* the run is matched
+# deliberately: a key pasted with a line wrap contains a newline, and a pattern
+# that stops at the break redacts the first segment and prints the rest. That is
+# not hypothetical — it leaked a live key through /llm/status.
+_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{4,}(?:\s+[A-Za-z0-9_\-]{4,})*")
+
+# Environment variables holding secrets that must never appear in a response.
+_SECRET_ENV_VARS = ("ANTHROPIC_API_KEY", "FETALSCAN_API_KEY")
+
+# The bytes of a rejected header *are* the credential, so the value is dropped
+# wholesale rather than redacted — no pattern has to be trusted.
+_ILLEGAL_HEADER = re.compile(r"Illegal header value.*", re.DOTALL)
+
+
+def _redact_known_secrets(msg: str) -> str:
+    """Remove the actual secret values, not merely things shaped like secrets.
+
+    Pattern-matching alone has already failed once. Whatever the environment
+    holds is known exactly, so match on that: the whole value, and — because a
+    malformed key is precisely the case that produces these errors — each
+    whitespace-separated fragment of it as well.
+    """
+    for var in _SECRET_ENV_VARS:
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        candidates = {raw, raw.strip(), *raw.split()}
+        for frag in sorted((c for c in candidates if len(c) >= 8), key=len, reverse=True):
+            msg = msg.replace(frag, "***REDACTED***")
+    return msg
 
 
 def _sanitize_error(exc: BaseException) -> str:
@@ -138,8 +166,10 @@ def _sanitize_error(exc: BaseException) -> str:
     failure, proxy error, rejected certificate — in the chained exception.
     Reporting only the top frame is how a diagnostic ends up saying nothing.
 
-    Provider SDKs also put request context in exception strings, so redact
-    anything key-shaped and cap the length rather than trusting it to be clean.
+    Redaction runs in three layers, because the single pattern-based layer this
+    started with leaked a live key: drop rejected header values wholesale,
+    replace the known secret values read from the environment, then
+    pattern-match whatever is left.
     """
     parts: list[str] = []
     seen: set[int] = set()
@@ -151,8 +181,33 @@ def _sanitize_error(exc: BaseException) -> str:
         cur = cur.__cause__ or cur.__context__
 
     msg = " <- ".join(parts)
+    msg = _ILLEGAL_HEADER.sub("Illegal header value [value withheld]", msg)
+    msg = _redact_known_secrets(msg)
     msg = _KEY_PATTERN.sub("sk-***", msg)
     return msg[:600]
+
+
+def get_api_key() -> tuple[str | None, str | None]:
+    """Read ANTHROPIC_API_KEY. Returns ``(key, problem)``.
+
+    Surrounding whitespace is stripped — env vars routinely pick up a trailing
+    newline and that is always safe to drop. Whitespace *inside* the value is
+    reported instead of repaired: httpx rejects a header containing a newline,
+    which surfaces as ``APIConnectionError`` and reads as a network outage when
+    the real fault is a credential pasted across two lines. Joining the pieces
+    silently would mean guessing at a credential, so it is named instead.
+    """
+    raw = os.environ.get("ANTHROPIC_API_KEY")
+    if not raw or not raw.strip():
+        return None, None
+    key = raw.strip()
+    if any(c.isspace() for c in key):
+        return None, (
+            "ANTHROPIC_API_KEY contains a line break or space inside the value, so it "
+            "cannot be sent as an HTTP header. It was most likely pasted wrapped across "
+            "two lines. Re-paste it on the Space as a single unbroken line and restart."
+        )
+    return key, None
 
 
 def _call_llm(api_key: str, prompt: str, max_tokens: int = 400) -> tuple[str | None, str | None]:
@@ -237,7 +292,7 @@ def ask_about_finding(
     ]
     any_provisional = any(h.chunk.provisional for h in hits)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key, key_problem = get_api_key()
     if not api_key:
         # Retrieval still works without a key — hand back the sourced excerpts
         # so the feature degrades to "here is the relevant reference" instead
@@ -246,14 +301,20 @@ def ask_about_finding(
             finding_id=finding_id,
             question=question,
             answer=(
-                "Answer generation is unavailable (no ANTHROPIC_API_KEY configured on the "
-                "server), but the reference material matching your question is shown below "
+                "Answer generation is unavailable ("
+                + (
+                    "the server's ANTHROPIC_API_KEY is malformed"
+                    if key_problem
+                    else "no ANTHROPIC_API_KEY configured on the server"
+                )
+                + "), but the reference material matching your question is shown below "
                 "and can be read directly."
             ),
             citations=[c.citation for c in chunks_out],
             chunks=chunks_out,
             grounded=True,
             used_llm=False,
+            llm_error=key_problem,
             any_provisional=any_provisional,
             disclaimer=DISCLAIMER,
         )
@@ -467,7 +528,15 @@ def llm_status(_: None = Depends(verify_api_key)) -> LlmStatusResponse:
     """
     import time
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key, key_problem = get_api_key()
+    if key_problem:
+        return LlmStatusResponse(
+            key_present=True,
+            model=LLM_MODEL,
+            ok=False,
+            error="Malformed ANTHROPIC_API_KEY: whitespace inside the value.",
+            hint=key_problem,
+        )
     if not api_key:
         return LlmStatusResponse(
             key_present=False,

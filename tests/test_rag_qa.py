@@ -529,3 +529,92 @@ def test_llm_status_skips_the_network_probe_for_an_auth_failure():
                 r = client.get("/llm/status")
     probe.assert_not_called()
     assert r.json()["network"] is None
+
+
+# ── credential redaction: regression cover for a real leak ───────────────────
+#
+# /llm/status returned a live key in plaintext. httpx rejected a header whose
+# value contained a newline (the key had been pasted wrapped across two lines),
+# and the redaction pattern stopped at the break — redacting the first segment
+# and printing the remainder. These lock every layer of the fix.
+
+_WRAPPED_KEY = "sk-ant-api03-FIRSTHALF123456\nSECONDHALFabcdefXYZ789"
+
+
+def test_redaction_does_not_stop_at_a_newline_inside_the_key():
+    """The exact leak: a wrapped key must be redacted whole, not up to the break."""
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": _WRAPPED_KEY}):
+        msg = rag_endpoints._sanitize_error(ValueError(f"rejected: {_WRAPPED_KEY}"))
+    assert "SECONDHALFabcdefXYZ789" not in msg, "second line of the key leaked"
+    assert "FIRSTHALF123456" not in msg
+
+
+def test_illegal_header_value_is_withheld_entirely():
+    """The rejected header value *is* the credential — never echo it."""
+    exc = ValueError(
+        "Illegal header value b'sk-ant-api03-AAAA1111\\nBBBB2222CCCC3333'"
+    )
+    with patch.dict(os.environ, {}, clear=True):
+        msg = rag_endpoints._sanitize_error(exc)
+    assert "BBBB2222CCCC3333" not in msg
+    assert "AAAA1111" not in msg
+    assert "withheld" in msg
+
+
+def test_known_secret_is_redacted_even_when_it_is_not_key_shaped():
+    """A key that does not match the sk- pattern must still never be echoed."""
+    odd = "totally-custom-credential-value-9999"
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": odd}):
+        msg = rag_endpoints._sanitize_error(ValueError(f"auth failed for {odd}"))
+    assert odd not in msg
+    assert "***REDACTED***" in msg
+
+
+def test_the_server_api_key_is_also_redacted():
+    secret = "fetalscan-server-key-abcdef123456"
+    with patch.dict(os.environ, {"FETALSCAN_API_KEY": secret}):
+        msg = rag_endpoints._sanitize_error(ValueError(f"bad key {secret}"))
+    assert secret not in msg
+
+
+def test_get_api_key_strips_a_trailing_newline():
+    """Env vars routinely pick up a trailing newline; that is always safe to drop."""
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-goodkey123456\n"}):
+        key, problem = rag_endpoints.get_api_key()
+    assert key == "sk-ant-goodkey123456"
+    assert problem is None
+
+
+def test_get_api_key_reports_internal_whitespace_rather_than_repairing_it():
+    """Joining the fragments would be guessing at a credential."""
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": _WRAPPED_KEY}):
+        key, problem = rag_endpoints.get_api_key()
+    assert key is None
+    assert problem and "single unbroken line" in problem
+    assert "FIRSTHALF123456" not in problem, "the diagnostic must not echo the key"
+
+
+def test_llm_status_names_a_malformed_key_instead_of_blaming_the_network():
+    """This is what the live Space should have said from the start."""
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": _WRAPPED_KEY}):
+        with patch("anthropic.Anthropic") as A:
+            d = client.get("/llm/status").json()
+            A.assert_not_called()
+    assert d["ok"] is False
+    assert d["key_present"] is True
+    assert "Malformed" in d["error"]
+    assert "single unbroken line" in d["hint"]
+    assert "SECONDHALF" not in str(d)
+
+
+def test_ask_reports_a_malformed_key_and_still_returns_the_excerpts():
+    fid = _store_finding()
+    with patch.dict(os.environ, {"ANTHROPIC_API_KEY": _WRAPPED_KEY}):
+        r = client.post(
+            f"/findings/{fid}/ask", json={"question": "how reliable is this measurement?"}
+        )
+    d = r.json()
+    assert d["used_llm"] is False and d["chunks"]
+    assert "malformed" in d["answer"].lower()
+    assert d["llm_error"] and "unbroken line" in d["llm_error"]
+    assert "SECONDHALF" not in str(d)
