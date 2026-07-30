@@ -167,11 +167,36 @@ Proxy environment variables are reported because httpx honours them, so a stale
 `HTTPS_PROXY` breaks every call while the network itself is fine. Values are
 redacted to strip any embedded `user:password@`.
 
-Error strings are sanitised before they leave the process — anything matching
-`sk-…` is replaced with `sk-***`, and the message is capped — so the endpoint
-can be read from a browser without leaking the credential. `_sanitize_error`
-walks the `__cause__`/`__context__` chain: the wrapper exception is often
-contentless and the real reason sits one frame down.
+`_sanitize_error` walks the `__cause__`/`__context__` chain: the wrapper
+exception is often contentless and the real reason sits one frame down.
+
+### Redaction runs in three layers
+
+A single pattern-matching layer is not enough, and this repo has the scar to
+prove it: `sk-[A-Za-z0-9_-]{8,}` stops at a newline, so a key pasted wrapped
+across two lines was redacted up to the break and printed from there on — a
+live credential, through a public endpoint. So:
+
+1. **Rejected header values are dropped wholesale.** The bytes of a refused
+   header *are* the credential; no pattern has to be trusted with them.
+2. **Known secret values are replaced by value**, read from the environment —
+   the whole string and each whitespace-separated fragment of it. This does not
+   depend on the credential having any particular shape.
+3. **Pattern matching last**, now spanning internal whitespace, for anything the
+   first two layers did not know about.
+
+Messages are also length-capped. Any new secret-bearing environment variable
+belongs in `_SECRET_ENV_VARS`.
+
+### Malformed keys are named, not misattributed
+
+`get_api_key()` strips surrounding whitespace — env vars routinely collect a
+trailing newline and dropping it is always safe. Whitespace *inside* the value
+is reported rather than repaired: httpx refuses to send a header containing a
+newline, which raises `APIConnectionError` and reads as a network outage when
+the real fault is a credential pasted across two lines. Silently joining the
+fragments would mean guessing at a credential, so `/llm/status` names it
+instead and never calls the API.
 
 > `app/report.py` swallows LLM errors the same way this code used to, so
 > LLM-mode report generation can also fall back to rule-based prose without
