@@ -42,9 +42,8 @@ _JUSTIFICATION_SYSTEM_PROMPT = (
 
 def _run_inference(variant: str, img_gray, pixel_spacing_mm: float, threshold: float) -> dict:
     """Run one checkpoint over an image, matching what /infer does for its type."""
+    from app import cine
     from app.inference import N_FRAMES, TemporalFetaSegNet
-
-    from . import cine
 
     model = model_manager.get_model(variant)
     if model is None:

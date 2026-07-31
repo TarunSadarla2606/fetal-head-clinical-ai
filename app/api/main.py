@@ -300,6 +300,10 @@ def infer(
             "trimester": result["trimester"],
             "reliability": result["reliability"],
             "hc_std_mm": result["hc_std_mm"],
+            # The per-frame series the reliability score is derived from.
+            # /findings/{id}/escalate reports the spread and frame count from
+            # it, so without it stored the verdict loses its evidence.
+            "per_frame_hc": result.get("per_frame_hc"),
             "confidence_label": result["confidence_label"],
             "elapsed_ms": result["elapsed_ms"],
             "mode": result["mode"],
