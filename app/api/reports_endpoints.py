@@ -87,9 +87,14 @@ def _generate_narratives(
     """Generate narrative paragraphs.
 
     Returns ((p1, p2, p3, impression), used_llm).
-    LLM is used only when report_mode=='llm' AND api_key is present.
-    Falls back to rule-based paragraphs otherwise.
+
+    ``used_llm`` reflects whether a call actually returned text, not whether one
+    was attempted. Every narrative site in report.py falls back to a template on
+    failure, so requesting LLM mode with a working key still yields rule-based
+    prose when the API is unreachable — reporting True there would label a
+    template report as model-generated.
     """
+    from app import report as report_module
     from app.report import (
         _llm_cine_narrative,
         _llm_static_narrative,
@@ -106,7 +111,9 @@ def _generate_narratives(
     use_llm = report_mode == "llm" and bool(api_key)
 
     if use_llm:
-        try:
+        # track_llm_calls records each call's outcome; the narrative functions
+        # swallow failures internally so nothing propagates here.
+        with report_module.track_llm_calls() as telemetry:
             if is_temporal:
                 p1, p2, p3, impression = _llm_cine_narrative(
                     hc_mm,
@@ -131,9 +138,10 @@ def _generate_narratives(
                     elapsed_ms,
                     api_key,
                 )
-            return (p1, p2, p3, impression), True
-        except Exception:
-            pass  # fall through to rule-based on any LLM failure
+        # True only if at least one call actually returned text. The narrative
+        # functions have already substituted templates for whatever failed, so
+        # a fully-degraded run returns template prose labelled as such.
+        return (p1, p2, p3, impression), telemetry.used_llm
 
     if is_temporal:
         p1 = _rule_cine_p1(hc_mm, ga_str, ga_weeks, trimester, reliability, hc_std_mm)

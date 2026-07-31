@@ -60,7 +60,37 @@ from inference import (
 )
 from model_card import render_model_card
 from PIL import Image
-from report import generate_cine_report, generate_comparison_report, generate_static_report
+from report import (
+    generate_cine_report,
+    generate_comparison_report,
+    generate_static_report,
+    track_llm_calls,
+)
+
+
+def _render_report_mode_caption(requested_llm: bool, run) -> None:
+    """State which prose the reader actually got, not which was requested.
+
+    The old caption read `"LLM-generated" if (use_llm and ANTHROPIC_API_KEY)`,
+    so it announced LLM prose whenever a key existed — including when every
+    call had failed and the whole report was rendered from templates. A label
+    that cannot fail is not a label.
+    """
+    if not requested_llm:
+        st.caption("Report type: Rule-based template")
+        return
+    if run.used_llm:
+        st.caption("Report type: LLM-generated")
+        return
+    if run.fully_degraded:
+        st.caption("Report type: Rule-based template — LLM narrative unavailable")
+        st.warning(
+            f"LLM narrative generation failed, so this report uses the rule-based "
+            f"template. Reason: {run.last_error}"
+        )
+        return
+    st.caption("Report type: Rule-based template (no ANTHROPIC_API_KEY configured)")
+
 from xai import build_xai_panel
 
 # ── page config ───────────────────────────────────────────────────────────────
@@ -655,7 +685,7 @@ with tab_static:
                 gradcam_image_b64   = None
                 accession_number    = None
                 report_mode         = "template"
-            with st.spinner("Generating clinical report..."):
+            with st.spinner("Generating clinical report..."), track_llm_calls() as _llm_run:
                 st.session_state.static_pdf = generate_static_report(
                     _stored_s,
                     api_key=ANTHROPIC_API_KEY,
@@ -665,8 +695,7 @@ with tab_static:
                     report=_PatientProxy_S(),
                     pixel_spacing_source=_ps_src_s.upper(),
                 )
-            _rmode = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
-            st.caption(f"Report type: {_rmode}")
+            _render_report_mode_caption(use_llm, _llm_run)
 
         if st.session_state.get("static_pdf"):
             st.download_button(
@@ -993,7 +1022,7 @@ with tab_cine:
                 gradcam_image_b64   = None
                 accession_number    = None
                 report_mode         = "template"
-            with st.spinner("Generating cine clinical report..."):
+            with st.spinner("Generating cine clinical report..."), track_llm_calls() as _llm_run:
                 st.session_state.cine_pdf = generate_cine_report(
                     _stored_c,
                     api_key=ANTHROPIC_API_KEY,
@@ -1003,8 +1032,7 @@ with tab_cine:
                     report=_PatientProxy_C(),
                     pixel_spacing_source=_ps_src_c.upper(),
                 )
-            _rmode_c = "LLM-generated" if (use_llm and ANTHROPIC_API_KEY) else "Rule-based template"
-            st.caption(f"Report type: {_rmode_c}")
+            _render_report_mode_caption(use_llm, _llm_run)
 
         if st.session_state.get("cine_pdf"):
             st.download_button(

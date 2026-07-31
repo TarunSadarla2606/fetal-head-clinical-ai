@@ -21,7 +21,12 @@ Two narrative modes:
 """
 
 import io
+import logging
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from reportlab.lib import colors
@@ -1496,6 +1501,24 @@ def _appendix_combined_technical(story, st, results):
 # ── LLM narrative functions ────────────────────────────────────────────────────
 
 
+log = logging.getLogger(__name__)
+
+
+def _sanitize_llm_error(exc: BaseException) -> str:
+    """Redact and flatten an exception for logging/reporting.
+
+    Delegates to the API's sanitiser so both paths redact identically — that
+    one walks the __cause__ chain, which matters because APIConnectionError
+    stringifies to nothing useful on its own.
+    """
+    try:
+        from app.api.rag_endpoints import _sanitize_error
+
+        return _sanitize_error(exc)
+    except ImportError:
+        return f"{type(exc).__name__}: {exc}"[:300]
+
+
 _CLINICAL_SYSTEM_PROMPT = (
     "You are generating the Clinical Interpretation section of a fetal head circumference "
     "biometry report. The audience is the referring obstetrician, not a patient. "
@@ -1507,7 +1530,60 @@ _CLINICAL_SYSTEM_PROMPT = (
 )
 
 
+@dataclass
+class LlmTelemetry:
+    """What actually happened across one report's narrative calls.
+
+    Every narrative site is written ``_call_llm(...) or _rule_...``, so a failed
+    call is invisible: the report still renders, just from templates. Combined
+    with a "Report type" caption derived from *key presence*, that produced a
+    report labelled LLM-generated whose every paragraph was rule-based. This
+    records the truth so callers can say which one they actually got.
+    """
+
+    attempts: int = 0
+    failures: int = 0
+    last_error: str | None = None
+
+    @property
+    def used_llm(self) -> bool:
+        """True only if at least one call actually returned text."""
+        return self.attempts > self.failures
+
+    @property
+    def fully_degraded(self) -> bool:
+        return self.attempts > 0 and self.failures == self.attempts
+
+
+_llm_telemetry: ContextVar[LlmTelemetry | None] = ContextVar("_llm_telemetry", default=None)
+
+
+@contextmanager
+def track_llm_calls() -> Iterator[LlmTelemetry]:
+    """Collect the outcome of every ``_call_llm`` inside this block.
+
+    A ContextVar rather than a module global: report generation runs in
+    FastAPI's threadpool, and concurrent requests must not read each other's
+    counters.
+    """
+    telemetry = LlmTelemetry()
+    token = _llm_telemetry.set(telemetry)
+    try:
+        yield telemetry
+    finally:
+        _llm_telemetry.reset(token)
+
+
 def _call_llm(api_key: str, prompt: str, max_tokens: int = 250) -> str | None:
+    """Generate one narrative paragraph, or None so the caller falls back.
+
+    Returning None keeps the ``or _rule_...`` idiom at every call site, but the
+    failure is no longer silent — it is recorded on the active telemetry and
+    logged with a traceback.
+    """
+    telemetry = _llm_telemetry.get()
+    if telemetry is not None:
+        telemetry.attempts += 1
     try:
         import anthropic
 
@@ -1518,8 +1594,15 @@ def _call_llm(api_key: str, prompt: str, max_tokens: int = 250) -> str | None:
             system=_CLINICAL_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],
         )
+        if not r.content:
+            raise RuntimeError("Empty response: the model returned no content blocks.")
         return r.content[0].text.strip()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — degrade to the template, never fail the report
+        detail = _sanitize_llm_error(exc)
+        if telemetry is not None:
+            telemetry.failures += 1
+            telemetry.last_error = detail
+        log.warning("report: narrative LLM call failed — %s", detail, exc_info=True)
         return None
 
 
