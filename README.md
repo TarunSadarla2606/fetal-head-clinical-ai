@@ -198,10 +198,34 @@ the real fault is a credential pasted across two lines. Silently joining the
 fragments would mean guessing at a credential, so `/llm/status` names it
 instead and never calls the API.
 
-> `app/report.py` swallows LLM errors the same way this code used to, so
-> LLM-mode report generation can also fall back to rule-based prose without
-> saying why. `/llm/status` diagnoses the shared key and client, but that
-> function has not been converted yet.
+### Reports say which prose you actually got
+
+Every narrative site in `app/report.py` is written `_call_llm(...) or
+_rule_...`, so a failed call is invisible in the output — the report renders
+either way, just from templates. Paired with a caption derived from key
+*presence*, that produced reports labelled "LLM-generated" whose every
+paragraph was rule-based.
+
+`track_llm_calls()` is a context manager that records attempts, failures and
+the last (redacted) error for one report:
+
+```python
+with track_llm_calls() as run:
+    pdf = generate_static_report(result, api_key=key, use_llm=True, ...)
+
+run.used_llm         # at least one call returned text
+run.fully_degraded   # every call failed — the report is entirely template prose
+run.last_error       # why, sanitised
+```
+
+It is a `ContextVar`, not a module global: report rendering runs in FastAPI's
+threadpool and concurrent requests must not read each other's counters.
+
+`used_llm` on the reports API and the Streamlit "Report type" caption both come
+from this, so a fully-degraded run is labelled as the template report it is and
+says why. Tests mock `anthropic.Anthropic` rather than `_call_llm` — patching
+our own function skipped the accounting inside it, which is how the mislabel
+survived a green suite.
 
 ### The knowledge base
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -67,22 +67,30 @@ def _payload(**overrides):
     return base
 
 
-def _mock_llm():
-    """Patch the underlying Anthropic call so tests don't hit the network.
+_LLM_PARAGRAPHS = [
+    "LLM-generated biometric paragraph with HC and GA context.",
+    "LLM-generated activation map paragraph mentioning calvarium.",
+    "LLM-generated compression note for the pruned checkpoint.",
+    "LLM-generated impression for the referring physician.",
+]
 
-    _llm_static_narrative now returns (p1, p2, p3, impression) — 4 calls.
-    Supply plenty of values for any number of paragraphs.
+
+def _mock_llm():
+    """Patch the Anthropic SDK — the external boundary — not our own _call_llm.
+
+    Patching _call_llm skipped the telemetry inside it, so a report whose every
+    narrative call failed still reported used_llm=True. Mocking one layer out
+    means the real _call_llm runs, including its accounting.
     """
-    return patch(
-        "app.report._call_llm",
-        side_effect=[
-            "LLM-generated biometric paragraph with HC and GA context.",
-            "LLM-generated activation map paragraph mentioning calvarium.",
-            None,  # p3 (only for pruned models — None triggers rule-based fallback)
-            "LLM-generated impression for the referring physician.",
+
+    def _make_client(*_args, **_kwargs):
+        client = MagicMock()
+        client.messages.create.side_effect = [
+            MagicMock(content=[MagicMock(text=t)]) for t in _LLM_PARAGRAPHS * 12
         ]
-        * 8,  # enough for any call count
-    )
+        return client
+
+    return patch("anthropic.Anthropic", side_effect=_make_client)
 
 
 # ── 6.1 + 6.2 ─────────────────────────────────────────────────────────────────
