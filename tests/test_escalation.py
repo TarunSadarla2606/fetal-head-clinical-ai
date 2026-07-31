@@ -171,12 +171,19 @@ def test_single_frame_reliability_is_not_treated_as_evidence():
     assert out.decision is escalation.Decision.ACCEPT  # cleared by cross-checkpoint agreement
 
 
-def test_a_cine_clip_with_too_few_measurable_frames_has_no_signal():
+def test_a_thin_cine_clip_reports_its_frame_count_without_faking_a_range():
+    """inference.py leaves reliability at 0.0 below MIN_FRAMES_FOR_RELIABILITY.
+
+    So a thin clip flags on its own numbers rather than being special-cased —
+    the fixture here mirrors what inference.py actually produces for one
+    measurable frame, which the previous version of this test did not.
+    """
     out = escalation.decide(
-        _record(per_frame_hc=[220.1], reliability=0.99, hc_std_mm=0.0), _returns(220.3)
+        _record(per_frame_hc=[220.1], reliability=0.0, hc_std_mm=0.0), _never_called
     )
-    assert out.signals["has_consistency_signal"] is False
-    assert out.tool_calls
+    assert out.signals["measurable_frames"] == 1
+    assert out.signals["hc_range_mm"] is None, "a range needs at least two points"
+    assert out.decision is escalation.Decision.FLAG_FOR_REVIEW
 
 
 # ── endpoint ─────────────────────────────────────────────────────────────────
@@ -254,3 +261,62 @@ def test_every_variant_has_a_distinct_paired_checkpoint():
     for variant, alternate in escalation.ALTERNATE_CHECKPOINT.items():
         assert alternate != variant
         assert escalation.ALTERNATE_CHECKPOINT[alternate] == variant, "pairing must be symmetric"
+
+
+# ── regressions found in production ──────────────────────────────────────────
+#
+# Both of these shipped green because every test injected a fake run_inference
+# and hand-built the findings dict. Nothing exercised the real code path or the
+# real stored shape, so the module's own wiring was never checked.
+
+
+def test_run_inference_resolves_its_imports():
+    """The real _run_inference, not an injected stub.
+
+    It shipped with `from . import cine` — cine lives at app/cine.py, so every
+    re-check died with ImportError. Reaching the "checkpoint not loaded" guard
+    proves the imports resolve; loading real weights is not the point.
+    """
+    from app.api.escalation_endpoints import _run_inference
+
+    with pytest.raises(RuntimeError, match="not loaded"):
+        _run_inference("phase0", np.zeros((256, 384), dtype=np.uint8), 0.07, 0.5)
+
+
+def test_a_cine_result_uses_its_reliability_signal_rather_than_calling_a_tool():
+    """has_consistency_signal keyed on per_frame_hc, which /infer never stored.
+
+    Every cine result therefore reported "no signal" and spent a second full
+    inference — the agent ignoring its own primary evidence, which is precisely
+    the fixed-pipeline behaviour this design exists to avoid.
+    """
+    out = escalation.decide(
+        _record(mode="cine_clip", reliability=0.995, hc_std_mm=0.8, per_frame_hc=None),
+        _never_called,
+    )
+    assert out.signals["has_consistency_signal"] is True
+    assert out.signals["reliability"] == pytest.approx(0.995)
+    assert out.decision is escalation.Decision.ACCEPT
+    assert out.tool_calls == []
+
+
+def test_infer_stores_the_per_frame_series_the_verdict_reports():
+    """The evidence panel showed measurable_frames: 0 on a 16-frame clip."""
+    import inspect
+
+    from app.api import main
+
+    source = inspect.getsource(main.infer)
+    assert '"per_frame_hc"' in source, (
+        "/infer must persist per_frame_hc or the verdict loses its evidence"
+    )
+
+
+def test_a_cine_run_with_no_measurable_frames_still_flags():
+    """It flags on reliability 0.0 from inference.py, not by being special-cased."""
+    out = escalation.decide(
+        _record(mode="cine_clip", reliability=0.0, hc_std_mm=0.0, per_frame_hc=[]),
+        _never_called,
+    )
+    assert out.decision is escalation.Decision.FLAG_FOR_REVIEW
+    assert out.signals["measurable_frames"] == 0

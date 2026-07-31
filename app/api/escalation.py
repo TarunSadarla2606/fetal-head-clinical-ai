@@ -175,15 +175,27 @@ def _collect_signals(findings: dict) -> dict:
     """
     mode = findings.get("mode", "unknown")
     per_frame = [h for h in (findings.get("per_frame_hc") or []) if h is not None]
-    has_signal = mode == "cine_clip" and len(per_frame) >= MIN_FRAMES_FOR_RELIABILITY
 
+    # The discriminator is the *mode*, not whether per_frame_hc happens to be
+    # stored. Cine inference derives reliability from real inter-frame spread;
+    # single-frame hard-codes it. Keying on the optional field instead made
+    # every cine result report "no signal" and call the re-check tool — the
+    # agent ignoring its own primary evidence, which is the exact fixed-pipeline
+    # behaviour this design exists to avoid.
+    has_signal = mode == "cine_clip"
+
+    # A cine run with too few measurable frames already carries reliability 0.0
+    # from inference.py, so it flags on its own merits rather than needing to be
+    # special-cased into "no signal".
     return {
         "mode": mode,
         "hc_mm": findings.get("hc_mm"),
         "reliability": findings.get("reliability") if has_signal else None,
         "hc_std_mm": findings.get("hc_std_mm") if has_signal else None,
         "hc_range_mm": (
-            round(float(np.max(per_frame) - np.min(per_frame)), 2) if has_signal else None
+            round(float(np.max(per_frame) - np.min(per_frame)), 2)
+            if len(per_frame) >= MIN_FRAMES_FOR_RELIABILITY
+            else None
         ),
         "measurable_frames": len(per_frame),
         "has_consistency_signal": has_signal,

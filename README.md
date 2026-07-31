@@ -276,7 +276,10 @@ none:
   hard-codes `reliability = 1.0` and `hc_std_mm = 0.0` so the response shape
   matches cine mode. Reading those as measurements would hand every static result
   a confident green ACCEPT that nothing verified. `has_consistency_signal` marks
-  the difference, and the agent seeks independent evidence instead.
+  the difference, and the agent seeks independent evidence instead. The
+  discriminator is the **mode** — keying it on whether `per_frame_hc` happened to
+  be present made every cine result claim "no signal" and spend a re-check, the
+  agent ignoring its own primary evidence.
 - **The verdict never depends on the LLM.** Claude only rewrites the rationale
   for a reader; its system prompt forbids re-deciding, inventing numbers, or
   implying a clinical finding. A failed call costs phrasing, not the decision.
