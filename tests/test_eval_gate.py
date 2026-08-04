@@ -95,10 +95,20 @@ def test_every_known_issue_names_a_variant_that_has_an_override():
         assert variant in VARIANT_GATES, f"{variant} is documented but not actually excepted"
 
 
-def test_the_loosened_phase4a_gate_still_catches_a_worse_regression():
-    """Accommodating a known fault must not mean accepting anything."""
-    assert check_variant("phase4a", _entry(hc_mae_mm=32.4, hc_max_error_mm=162.0)) == []
-    assert check_variant("phase4a", _entry(hc_mae_mm=80.0)) != []
+def test_the_phase4a_gate_admits_its_measured_value_and_rejects_the_old_one():
+    """Tightened after the fragmented-ring fix took phase4a to 11.8 mm.
+
+    The pre-fix 32.4 mm must now FAIL — a gate that still admits the broken
+    behaviour has not been tightened, it has just been relabelled.
+    """
+    assert check_variant("phase4a", _entry(hc_mae_mm=11.8, hc_max_error_mm=39.4)) == []
+    assert check_variant("phase4a", _entry(hc_mae_mm=32.4, hc_max_error_mm=162.0)) != []
+
+
+def test_the_phase0_gate_is_still_the_pre_fix_bound_and_says_so():
+    """Left wide on purpose until CI measures it; the note must admit that."""
+    assert check_variant("phase0", _entry(hc_mae_mm=41.9, hc_max_error_mm=208.0)) == []
+    assert "not yet known" in KNOWN_ISSUES["phase0"]
 
 
 # ── the CLI, end to end ──────────────────────────────────────────────────────

@@ -712,28 +712,71 @@ def make_comparison_overlay(
 # ── HC and GA computation ─────────────────────────────────────────────────────
 
 
+INTACT_RING_MIN_SHARE = 0.90
+"""Share of foreground the largest component must hold to be measured alone.
+
+Below this the calvarium has been segmented as separate arcs rather than one
+ring, and the largest of them is not the head — see ``estimate_hc_mm``.
+"""
+
+
+def _ellipse_perimeter_mm(
+    major: float, minor: float, pixel_spacing_mm: float, input_w: int, orig_w: int
+) -> float | None:
+    """Ramanujan's approximation, scaled from network pixels back to mm."""
+    a, b = major / 2, minor / 2
+    if a < 1 or b < 1:
+        return None
+    h_val = ((a - b) / (a + b + 1e-8)) ** 2
+    hc_px = np.pi * (a + b) * (1 + (3 * h_val) / (10 + np.sqrt(4 - 3 * h_val + 1e-8)))
+    return hc_px * pixel_spacing_mm * (orig_w / input_w)
+
+
 def estimate_hc_mm(
     mask_bin: np.ndarray,
     pixel_spacing_mm: float,
     input_w: int = INPUT_W,
     orig_w: int = ORIG_W,
 ) -> float | None:
-    """
-    Estimate HC in mm using Ramanujan's ellipse perimeter approximation
-    applied to the largest connected component of the segmentation mask.
+    """Estimate HC in mm via Ramanujan's ellipse perimeter approximation.
+
+    Normally the ellipse is fitted to the largest connected component, which
+    ignores speckle blobs elsewhere in the image.
+
+    That breaks when the calvarium is segmented with a **gap**. ``fill_hollow_mask``
+    cannot close an open ring, so the skull survives as two arcs, and the larger
+    arc is half a head — measured confidently, at roughly half the true
+    circumference. Observed on real demo subjects: 160 mm against a 322 mm
+    reference, and 169 mm against 331 mm, from masks whose largest component held
+    only 59% of the foreground.
+
+    So when the largest component holds less than ``INTACT_RING_MIN_SHARE`` of
+    the foreground, the second-moment axes are taken over *all* foreground
+    instead. Those moments describe the whole scattered ring, which is the thing
+    being measured. Above the threshold the behaviour is unchanged, so an intact
+    mask — every cine-mode result and the large majority of static ones — returns
+    exactly what it did before.
+
+    Falling back always would be worse: it would let distant speckle drag the
+    ellipse. The point is to distinguish "one ring" from "pieces of one ring",
+    not to abandon the component filter.
     """
     labeled = label(mask_bin)
     if labeled.max() == 0:
         return None
     regions = regionprops(labeled)
+    total_area = sum(r.area for r in regions)
     largest = max(regions, key=lambda r: r.area)
-    a = largest.major_axis_length / 2
-    b = largest.minor_axis_length / 2
-    if a < 1 or b < 1:
-        return None
-    h_val = ((a - b) / (a + b + 1e-8)) ** 2
-    hc_px = np.pi * (a + b) * (1 + (3 * h_val) / (10 + np.sqrt(4 - 3 * h_val + 1e-8)))
-    return hc_px * pixel_spacing_mm * (orig_w / input_w)
+
+    if total_area > 0 and largest.area / total_area < INTACT_RING_MIN_SHARE:
+        whole = regionprops((mask_bin > 0).astype(np.uint8))[0]
+        return _ellipse_perimeter_mm(
+            whole.axis_major_length, whole.axis_minor_length, pixel_spacing_mm, input_w, orig_w
+        )
+
+    return _ellipse_perimeter_mm(
+        largest.axis_major_length, largest.axis_minor_length, pixel_spacing_mm, input_w, orig_w
+    )
 
 
 def hadlock_ga(hc_mm: float) -> tuple[float, str]:
