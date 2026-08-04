@@ -109,10 +109,12 @@ def _colormap_overlay(
 # ── 1. GradCAM++ ──────────────────────────────────────────────────────────────
 
 
-def compute_gradcam(model, img_gray: np.ndarray) -> np.ndarray:
-    """Compute a GradCAM++ overlay (uint8 RGB) for *img_gray*.
+def compute_gradcam_map(model, img_gray: np.ndarray) -> np.ndarray:
+    """Compute the raw GradCAM++ attribution map, normalised to [0, 1].
 
-    Returns an array shaped like the input grayscale (H, W, 3).
+    Split out from :func:`compute_gradcam`, which used to compute this array
+    and then discard it in favour of the rendered PNG. The numbers are what any
+    quantitative reading of the saliency depends on, so they have to survive.
     """
     backbone = _spatial_backbone(model)
     target = _gradcam_target_layer(model)
@@ -159,13 +161,23 @@ def compute_gradcam(model, img_gray: np.ndarray) -> np.ndarray:
         fh.remove()
         bh.remove()
 
-    return _colormap_overlay(img_gray, cam_norm, cmap_name="jet", alpha=0.45)
+    return cam_norm.astype(np.float32)
+
+
+def compute_gradcam(model, img_gray: np.ndarray) -> np.ndarray:
+    """Compute a GradCAM++ overlay (uint8 RGB) for *img_gray*.
+
+    Returns an array shaped like the input grayscale (H, W, 3).
+    """
+    return _colormap_overlay(
+        img_gray, compute_gradcam_map(model, img_gray), cmap_name="jet", alpha=0.45
+    )
 
 
 # ── 2. Uncertainty (MC via input perturbation) ────────────────────────────────
 
 
-def compute_uncertainty(
+def compute_uncertainty_map(
     model,
     img_gray: np.ndarray,
     n_samples: int = 8,
@@ -201,7 +213,22 @@ def compute_uncertainty(
     var = arr.var(axis=0)  # [H, W]
     v_max = float(var.max())
     var_norm = var / v_max if v_max > 1e-8 else var
-    return _colormap_overlay(img_gray, var_norm.astype(np.float32), cmap_name="hot", alpha=0.55)
+    return var_norm.astype(np.float32)
+
+
+def compute_uncertainty(
+    model,
+    img_gray: np.ndarray,
+    n_samples: int = 8,
+    noise_sigma: float = 0.04,
+) -> np.ndarray:
+    """Compute a pixel-wise uncertainty heatmap (uint8 RGB overlay)."""
+    return _colormap_overlay(
+        img_gray,
+        compute_uncertainty_map(model, img_gray, n_samples, noise_sigma),
+        cmap_name="hot",
+        alpha=0.55,
+    )
 
 
 def uncertainty_variance(model, img_gray: np.ndarray, n_samples: int = 8) -> float:
