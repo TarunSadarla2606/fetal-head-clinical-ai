@@ -445,33 +445,46 @@ gives a reference circumference per image but no per-pixel annotation, so Dice
 is reported as `null` **with a reason** rather than invented. Drop HC18
 annotation masks into `demo_subjects/masks/` to enable one.
 
-### Known issue: the static inference path
+### Fixed: the HC ellipse was being fitted to half a skull
 
-The first gated run measured all four checkpoints through the deployed path:
+The first gated run measured both static variants an order of magnitude worse
+than both temporal ones on the same 12 images — phase0 at 41.9 mm MAE against a
+README figure of 1.65 mm. That was not the models. It was `estimate_hc_mm`.
 
-| Variant | HC MAE | Worst case | Within ISUOG ±3 mm |
-|---|---|---|---|
-| phase0 (static) | **41.9 mm** | 208.0 mm | 25% |
-| phase4a (static, pruned) | **32.4 mm** | 161.9 mm | 16.7% |
-| phase2 (temporal) | 4.3 mm | 13.7 mm | 50% |
-| phase4b (temporal, pruned) | 4.3 mm | 14.3 mm | 50% |
+The ellipse was fitted to the **largest connected component**. When the
+calvarium segments with a gap, `fill_hollow_mask` cannot close an open ring, the
+skull survives as two arcs, and the larger arc is half a head — measured
+confidently at roughly half the true circumference:
 
-Both **static** variants are an order of magnitude worse than both temporal
-ones on the same 12 images, and phase0's 41.9 mm is against a README figure of
-1.65 mm on the HC18 test set. Two independently bad checkpoints is the less
-likely explanation; the common factor is `predict_single_frame`.
+| Image | Components | Largest share of foreground | HC | Reference |
+|---|---|---|---|---|
+| `804_HC.png` | 9 | **1.00** | 304 mm | 316 mm |
+| `800_HC.png` | 22 | **0.59** | **160 mm** | 322 mm |
+| `805_HC.png` | 49 | **0.59** | **169 mm** | 331 mm |
 
-One plausible mechanism: cine mode averages a consensus over 16 synthesised
-frames, which amounts to test-time augmentation, while the static path takes a
-single forward pass with no smoothing. That would make the temporal numbers
-flattering rather than the static ones anomalous. **This is unresolved** and
-worth investigating before quoting the static figures anywhere.
+Cine mode was immune only because averaging a consensus over 16 synthesised
+frames closes the ring. The temporal advantage was test-time augmentation
+concealing a fragile measurement step.
 
-Both static gates are set at measured-behaviour-plus-headroom so the pipeline
-is neither disabled nor permanently red, and still catches either getting
-worse. Recorded in `KNOWN_ISSUES` rather than by relaxing the defaults for
-everyone, and a test asserts each documented exception has a matching override
-so the notes cannot go stale.
+`estimate_hc_mm` now takes second-moment axes over *all* foreground when the
+largest component holds less than `INTACT_RING_MIN_SHARE` (0.90) of it, and is
+unchanged otherwise:
+
+| Variant | Before | After |
+|---|---|---|
+| phase4a | 32.44 mm MAE, worst 161.8 | **11.79 mm**, worst 39.4 |
+| phase4b | 4.26 mm, worst 14.3 | **4.26 mm, worst 14.3** — identical |
+
+That second row is the property that matters: a **no-op** on healthy masks, so
+every cine result and the majority of static ones return exactly what they did
+before. Falling back unconditionally would be worse — it lets distant speckle
+drag the ellipse, which is what the component filter is for. The threshold
+distinguishes "one ring" from "pieces of one ring".
+
+`phase4a`'s gate is tightened 45 → 18 mm accordingly. **`phase0`'s is not yet**:
+its weights are LFS pointers outside CI so the post-fix number is unknown, and
+guessing a bound is worse than admitting it is stale. It is flagged in
+`KNOWN_ISSUES` for tightening as soon as a `main` run reports the new value.
 
 ### The model card
 

@@ -35,20 +35,23 @@ CPU runner and measure around 11 s.
 # ── per-variant overrides ────────────────────────────────────────────────────
 
 VARIANT_GATES: dict[str, dict[str, tuple[str, float]]] = {
-    # Neither static variant currently meets the default bound. See
-    # KNOWN_ISSUES: this looks like the single-frame inference path rather than
-    # two independently bad checkpoints. Each is encoded at measured behaviour
-    # plus headroom so the pipeline still catches a *further* regression rather
-    # than being disabled or left permanently red. Tighten both once the
-    # underlying failure is fixed — that is the point of recording them here
-    # rather than relaxing the defaults for everyone.
+    # Both static variants were fitting the HC ellipse to half a skull when the
+    # calvarium segmented with a gap — see KNOWN_ISSUES and the fallback in
+    # estimate_hc_mm. phase4a went 32.4 -> 11.8 mm MAE once that was fixed, so
+    # its bound is tightened from 45 to 18: comfortably clear of the measured
+    # value without sitting on the default 12.0, which it now only just clears
+    # and would flap against.
+    "phase4a": {
+        "hc_mae_mm": ("<=", 18.0),
+        "hc_max_error_mm": ("<=", 60.0),
+    },
+    # phase0's weights are LFS pointers outside CI, so its post-fix number is
+    # not yet known — it measured 41.9 mm *before* the fix with the same
+    # fragmentation signature. Left wide deliberately rather than guessed at.
+    # TIGHTEN THIS once the next main run reports the new value.
     "phase0": {
         "hc_mae_mm": ("<=", 55.0),
         "hc_max_error_mm": ("<=", 250.0),
-    },
-    "phase4a": {
-        "hc_mae_mm": ("<=", 45.0),
-        "hc_max_error_mm": ("<=", 200.0),
     },
 }
 
@@ -73,25 +76,13 @@ sampling granularity rather than on regressions.
 
 KNOWN_ISSUES = {
     "phase0": (
-        "Measured 41.9 mm MAE with a 208 mm worst case on the 12 demo subjects, "
-        "against a README figure of 1.65 mm on the HC18 test set. phase4a shows "
-        "the same pattern (32.4 mm) while both temporal variants sit at ~4.3 mm "
-        "on the same images. The common factor is the single-frame inference "
-        "path: cine mode averages a consensus over 16 synthesised frames, which "
-        "acts as test-time augmentation, whereas the static path takes one "
-        "forward pass with no such smoothing. That points at predict_single_frame "
-        "or the static post-processing rather than at two independently bad "
-        "checkpoints, and it is unresolved."
-    ),
-    "phase4a": (
-        "On 2 of the 12 demo subjects (800_HC.png, 805_HC.png) phase4a predicts "
-        "roughly half the reference circumference — 159.98 vs 321.83 mm and "
-        "169.07 vs 330.70 mm. Both are the signature of the calvarium being "
-        "only partly segmented, and both are handled correctly by phase4b on "
-        "the same images, so this is the pruned static checkpoint rather than "
-        "the harness or the data. Excluding those two, phase4a's MAE is about "
-        "6.6 mm. The gate is set wide enough not to block deploys on a "
-        "pre-existing fault, and narrow enough to catch it getting worse."
+        "Measured 41.9 mm MAE with a 208 mm worst case before the fragmented-ring "
+        "fix in estimate_hc_mm, which took phase4a from 32.4 to 11.8 mm on the "
+        "same failure signature. phase0's weights are LFS pointers outside CI so "
+        "its post-fix number is not yet known; this bound is the pre-fix one and "
+        "should be tightened as soon as a main run reports the new value. Leaving "
+        "it wide is a temporary, visible compromise, not a judgement that 55 mm "
+        "is acceptable."
     ),
 }
 
