@@ -254,6 +254,66 @@ ISUOG text.
 
 ---
 
+## Interactive explainability
+
+`POST /findings/{id}/xai/ask` answers a free-text question about a finding's
+saliency map, grounded in the **attribution numbers** rather than the rendered
+picture.
+
+```jsonc
+{
+  "answer": "The attribution is concentrated, with 53.7% falling within 6 px of the predicted skull outline…",
+  "summary": {
+    "concentration": 0.67, "concentration_label": "concentrated",
+    "focused_area_pct": 12.2, "peak_region": "upper-centre",
+    "on_boundary_pct": 53.7, "inside_head_pct": 19.0, "outside_head_pct": 27.3,
+    "mask_available": true
+  },
+  "grounded": true,   // false ⇒ no attribution computed, model never called
+  "used_llm": true
+}
+```
+
+`compute_gradcam` used to build the raw `[0, 1]` attribution array and then
+throw it away, returning only the coloured PNG. It is now split into
+`compute_gradcam_map` (the numbers) and `compute_gradcam` (the rendering), so a
+quantitative reading is possible at all. Same for uncertainty.
+
+### What the summary measures — and deliberately does not
+
+`app/api/attribution.py` reduces a heatmap to quotable facts. The load-bearing
+one is **where the attribution sits relative to the predicted skull**: "the
+model looked at the upper left" is trivia, while "53.7% of the attribution mass
+is within 6 px of the segmented calvarial edge" is the difference between an
+anatomically plausible explanation and an artifact — which is the question a
+clinician actually asks of a saliency map.
+
+The boundary band uses a signed distance transform rather than dilation, so
+attribution just outside the skull line counts as "on the boundary" exactly as
+much as attribution just inside it.
+
+**No anatomical labels are computed, and the prompt forbids inventing them.**
+Nothing in a saliency map can distinguish the cavum septi pellucidi from a
+bright speckle artifact. A summary naming structures would invite precisely the
+confident, unfalsifiable prose this design exists to prevent — so the model may
+discuss what a region generally contains only while stating that the
+attribution data does not identify it.
+
+Other guarantees, each a test:
+
+- **No attribution ⇒ no LLM call.** A map that could not be computed returns a
+  refusal rather than letting the model narrate an empty array.
+- **A flat map reports "no attribution signal"** instead of a peak region —
+  `argmax` of an all-zero array is index 0, and reporting that as the peak lies.
+- **A missing mask omits the skull-relative fields**, rather than defaulting
+  them to zero. Those percentages *are* the answer; guessing them is guessing
+  the answer.
+- **Correlation, not causation.** Saliency shows where the model's output was
+  most sensitive. The prompt forbids implying the highlighted tissue caused the
+  measurement, and the disclaimer rides on every response.
+
+---
+
 ## Agentic reliability check
 
 `POST /findings/{id}/escalate` decides whether a measurement should be trusted,

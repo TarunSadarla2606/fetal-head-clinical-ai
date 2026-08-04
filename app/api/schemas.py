@@ -418,3 +418,29 @@ class EscalationResponse(BaseModel):
     )
     thresholds: dict = Field(description="Constants in force, so a verdict can be recomputed.")
     disclaimer: str
+
+
+class XaiAskRequest(BaseModel):
+    """A follow-up question about a finding's saliency map."""
+
+    question: str = Field(min_length=1, max_length=500)
+    method: Literal["gradcam", "uncertainty"] = "gradcam"
+
+
+class XaiAskResponse(BaseModel):
+    """Explanation of a saliency map, plus the measurements behind it."""
+
+    finding_id: str
+    question: str
+    method: str
+    answer: str
+    summary: dict = Field(
+        description="The measured attribution facts the answer was grounded in. "
+        "Returned so the explanation can be checked against them."
+    )
+    grounded: bool = Field(
+        description="False when no attribution could be computed — the model is not called."
+    )
+    used_llm: bool
+    llm_error: str | None = None
+    disclaimer: str

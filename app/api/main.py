@@ -42,6 +42,7 @@ from . import (
     reports_db,
     reports_endpoints,
     xai_endpoints,
+    xai_qa_endpoints,
 )
 from .deps import verify_api_key
 from .schemas import (
@@ -118,6 +119,7 @@ reports_db.init_db()
 app.include_router(reports_endpoints.router)
 app.include_router(rag_endpoints.router)
 app.include_router(escalation_endpoints.router)
+app.include_router(xai_qa_endpoints.router)
 
 # Demo seed (Batch 8.2) — idempotently insert 10 fabricated patient reports
 # so reviewers see a populated Reports tab on first open. Off by default;
