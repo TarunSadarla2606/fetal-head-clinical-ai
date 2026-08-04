@@ -445,18 +445,33 @@ gives a reference circumference per image but no per-pixel annotation, so Dice
 is reported as `null` **with a reason** rather than invented. Drop HC18
 annotation masks into `demo_subjects/masks/` to enable one.
 
-### Known issue the gates currently accommodate
+### Known issue: the static inference path
 
-`phase4a` predicts roughly half the reference circumference on two demo
-subjects (`800_HC.png`: 159.98 vs 321.83 mm; `805_HC.png`: 169.07 vs 330.70 mm)
-— the signature of a partly segmented calvarium. `phase4b` handles both
-correctly, so this is the pruned static checkpoint, not the harness. Excluding
-those two, `phase4a`'s MAE is about 6.6 mm rather than 32.4 mm.
+The first gated run measured all four checkpoints through the deployed path:
 
-Its gate is set at measured-behaviour-plus-headroom so the pipeline is neither
-disabled nor permanently red, and still catches the fault getting worse. This
-is documented in `KNOWN_ISSUES`, and a test asserts every documented exception
-has a matching gate override so the note cannot go stale.
+| Variant | HC MAE | Worst case | Within ISUOG ±3 mm |
+|---|---|---|---|
+| phase0 (static) | **41.9 mm** | 208.0 mm | 25% |
+| phase4a (static, pruned) | **32.4 mm** | 161.9 mm | 16.7% |
+| phase2 (temporal) | 4.3 mm | 13.7 mm | 50% |
+| phase4b (temporal, pruned) | 4.3 mm | 14.3 mm | 50% |
+
+Both **static** variants are an order of magnitude worse than both temporal
+ones on the same 12 images, and phase0's 41.9 mm is against a README figure of
+1.65 mm on the HC18 test set. Two independently bad checkpoints is the less
+likely explanation; the common factor is `predict_single_frame`.
+
+One plausible mechanism: cine mode averages a consensus over 16 synthesised
+frames, which amounts to test-time augmentation, while the static path takes a
+single forward pass with no smoothing. That would make the temporal numbers
+flattering rather than the static ones anomalous. **This is unresolved** and
+worth investigating before quoting the static figures anywhere.
+
+Both static gates are set at measured-behaviour-plus-headroom so the pipeline
+is neither disabled nor permanently red, and still catches either getting
+worse. Recorded in `KNOWN_ISSUES` rather than by relaxing the defaults for
+everyone, and a test asserts each documented exception has a matching override
+so the notes cannot go stale.
 
 ### The model card
 
