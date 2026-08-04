@@ -70,6 +70,11 @@ jobs:
       - name: Enforce release gates
         id: gate
         run: |
+          # pipefail is load-bearing: a pipeline's exit status is the LAST
+          # command's, so `check_thresholds.py | tee` reported tee's 0 and the
+          # gate passed everything. bash -e does not cover this.
+          set -euo pipefail
+
           # --require names the variants explicitly so a checkpoint that
           # silently stopped being evaluated fails the build instead of
           # shrinking the gate to whatever happened to load.

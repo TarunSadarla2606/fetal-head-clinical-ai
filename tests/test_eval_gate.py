@@ -197,3 +197,57 @@ def test_the_real_model_card_has_the_markers_and_the_disclaimer():
     assert "placeholders (1.0 and 0.0), not measurements" in flat
     assert "correlation with the model's own prediction" in flat
     assert "no ground-truth segmentation masks ship with this repository" in flat.lower()
+
+
+# ── the workflow must not swallow the gate's verdict ─────────────────────────
+#
+# The first live run measured phase0 at 41.9 mm MAE against a 12 mm bound and
+# deployed anyway: the step ran `check_thresholds.py | tee gate.log`, and a
+# pipeline's exit status is the last command's, so tee's 0 masked the gate's 1.
+# `bash -e` does not cover that. A gate that cannot fail is decorative.
+
+
+def _gate_step() -> dict:
+    import yaml
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "deploy-hf.yml").read_text())
+    for step in workflow["jobs"]["evaluate"]["steps"]:
+        if "check_thresholds.py" in (step.get("run") or ""):
+            return step
+    raise AssertionError("no step runs check_thresholds.py — the gate is not wired in")
+
+
+def test_the_gate_step_sets_pipefail_because_it_pipes():
+    run = _gate_step()["run"]
+    # Comments are stripped before matching: an earlier version of this test
+    # passed against the *unfixed* workflow because the explanatory comment
+    # above the fix contains the word "pipefail". Matching on prose rather than
+    # on the executed line is how a test ends up unable to fail.
+    code = "\n".join(
+        line for line in run.splitlines() if not line.strip().startswith("#")
+    )
+    if "|" in code:
+        assert any(
+            directive in code for directive in ("set -o pipefail", "set -euo pipefail")
+        ), (
+            "the gate's exit code is piped into another command; without "
+            "pipefail the pipeline reports that command's status and every "
+            "regression passes"
+        )
+
+
+def test_the_deploy_job_depends_on_the_gate():
+    import yaml
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "deploy-hf.yml").read_text())
+    needs = workflow["jobs"]["deploy"].get("needs")
+    needs = [needs] if isinstance(needs, str) else (needs or [])
+    assert "evaluate" in needs, "deploy must not run unless the gate passed"
+
+
+def test_the_gate_requires_every_variant_explicitly():
+    """Otherwise a checkpoint that stops being evaluated shrinks the gate."""
+    run = _gate_step()["run"]
+    assert "--require" in run
+    for variant in ("phase0", "phase4a", "phase2", "phase4b"):
+        assert variant in run, f"{variant} is not named in --require"
