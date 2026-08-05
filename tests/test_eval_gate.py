@@ -89,10 +89,18 @@ def test_an_override_still_inherits_the_ungiven_defaults():
     assert set(gates) == set(DEFAULT_GATES)
 
 
-def test_every_known_issue_names_a_variant_that_has_an_override():
-    """A documented exception with no corresponding gate change is a stale note."""
-    for variant in KNOWN_ISSUES:
-        assert variant in VARIANT_GATES, f"{variant} is documented but not actually excepted"
+def test_known_issues_are_about_variants_that_are_actually_excepted():
+    """A per-variant note with no corresponding override is stale.
+
+    Entries not named after a single variant (e.g. "static_variants", which
+    describes a property shared by two) are exempt from the mapping but must
+    still name the variants they concern, so the note stays traceable.
+    """
+    for key, text in KNOWN_ISSUES.items():
+        if key in VARIANT_GATES:
+            continue
+        named = [v for v in VARIANT_GATES if v in text]
+        assert named, f"{key} names no variant that carries an override"
 
 
 def test_the_phase4a_gate_admits_its_measured_value_and_rejects_the_old_one():
@@ -105,10 +113,10 @@ def test_the_phase4a_gate_admits_its_measured_value_and_rejects_the_old_one():
     assert check_variant("phase4a", _entry(hc_mae_mm=32.4, hc_max_error_mm=162.0)) != []
 
 
-def test_the_phase0_gate_is_still_the_pre_fix_bound_and_says_so():
-    """Left wide on purpose until CI measures it; the note must admit that."""
-    assert check_variant("phase0", _entry(hc_mae_mm=41.9, hc_max_error_mm=208.0)) == []
-    assert "not yet known" in KNOWN_ISSUES["phase0"]
+def test_the_phase0_gate_admits_its_measured_value_and_rejects_the_pre_fix_one():
+    """Tightened once CI measured 13.5 mm; the stale 41.9 mm must now fail."""
+    assert check_variant("phase0", _entry(hc_mae_mm=13.5, hc_max_error_mm=64.2)) == []
+    assert check_variant("phase0", _entry(hc_mae_mm=41.9, hc_max_error_mm=208.0)) != []
 
 
 # ── the CLI, end to end ──────────────────────────────────────────────────────

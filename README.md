@@ -481,10 +481,24 @@ before. Falling back unconditionally would be worse — it lets distant speckle
 drag the ellipse, which is what the component filter is for. The threshold
 distinguishes "one ring" from "pieces of one ring".
 
-`phase4a`'s gate is tightened 45 → 18 mm accordingly. **`phase0`'s is not yet**:
-its weights are LFS pointers outside CI so the post-fix number is unknown, and
-guessing a bound is worse than admitting it is stale. It is flagged in
-`KNOWN_ISSUES` for tightening as soon as a `main` run reports the new value.
+Confirmed in CI across all four checkpoints:
+
+| Variant | MAE before | MAE after | Worst case |
+|---|---|---|---|
+| phase0 | 41.9 mm | **13.5 mm** | 208.0 → 64.2 |
+| phase4a | 32.4 mm | **11.8 mm** | 161.9 → 39.4 |
+| phase2 | 4.27 mm | 4.27 mm | 13.7 → 13.7 |
+| phase4b | 4.26 mm | 4.26 mm | 14.3 → 14.3 |
+
+Gates tightened to match: `phase0` 55 → 20 mm, `phase4a` 45 → 18 mm, each with a
+test asserting the pre-fix value now **fails** — a gate that still admits the
+broken number has been relabelled, not tightened.
+
+Both static variants remain about 3× the temporal ones. That residual gap is
+**not** a measurement bug: the single-frame path has no equivalent of the
+consensus averaging cine mode gets over 16 synthesised frames. Worth stating
+plainly when comparing the two — some of the temporal advantage is the
+averaging, not the architecture.
 
 ### The model card
 
