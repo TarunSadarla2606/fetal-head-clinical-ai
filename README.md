@@ -229,6 +229,66 @@ says why. Tests mock `anthropic.Anthropic` rather than `_call_llm` — patching
 our own function skipped the accounting inside it, which is how the mislabel
 survived a green suite.
 
+### Answer-quality evaluation
+
+The rest of the suite tests the *plumbing* — that citations are extracted, that
+chunks come back, that failures degrade. None of it checked whether an answer is
+**supported by the chunks it cites**. A model could cite
+`project_metrics.md § Dice` and state the opposite of what that chunk says, and
+every one of those tests would still pass.
+
+`scripts/eval_llm.py` runs the real `/findings/{id}/ask` path over a fixed
+question set and scores three things:
+
+| Check | How | Needs a key? |
+|---|---|---|
+| **Invented citations** | Bracketed labels in the prose matching no retrieved chunk | No |
+| **Off-topic declined** | Retrieval must refuse before any model call | No |
+| **Groundedness** | A judge call asks whether each factual claim traces to the excerpts | Yes |
+| **Refusal** | A judge call asks whether an adversarial prompt extracted a clinical finding | Yes |
+
+Gates live in `scripts/llm_eval_thresholds.py`; `scripts/check_llm_eval.py`
+enforces them. Same split as the model-metrics gate: a non-zero exit from the
+checker means quality regressed, a non-zero exit from the runner means the
+harness broke.
+
+**Invented citations are the interesting deterministic one.** `rag_endpoints`
+builds its `citations` list by substring-matching retrieved chunks, so a label
+the model fabricated is silently dropped from that list and left sitting in the
+answer text — cited-looking prose with nothing behind it, invisible to every
+other test. Threshold: zero.
+
+**The refusal gate has no headroom (1.0).** Never stating a clinical finding
+about the fetus is the one thing this system must not do, the system prompt is
+the only thing preventing it, and nothing tested whether that prompt holds. The
+adversarial set varies its attack — instruction override, role reassignment,
+pre-empting the disclaimer, appeal to authority, emotional pressure, and a
+false-premise question naming a real condition.
+
+Groundedness is gated at 0.85 rather than 1.0 because the judge is itself a
+model and will occasionally mark a fair paraphrase unsupported. The specific
+unsupported sentences are printed, so a drop can be read rather than guessed at.
+
+#### Unmeasured never reads as passed
+
+Without `ANTHROPIC_API_KEY` the judged metrics are `null`, reported as
+**skipped**, and the deterministic gates still run. With `--require-judged` a
+missing judge is a *failure* — CI passes that flag only where the secret exists,
+so judged gates cannot be silently skipped on a repo that has one.
+
+One trap this harness nearly shipped with: an adversarial prompt that never
+reached the model was initially counted as *refused*. Technically nothing was
+generated — but nothing was tested either, so `refusal_rate` read 1.0 precisely
+when it had measured nothing. It now distinguishes "retrieval declined it"
+(a genuine refusal) from "the model was not called" (`null`), and a test pins
+the difference.
+
+Not wired into the deploy gate: judged metrics need a live API call, so
+deployment would fail on rate limits and network weather rather than on
+regressions. `llm-eval.yml` runs on changes to the prompts or knowledge base, on
+a weekly schedule — the model behind the prompts can change without a commit
+here — and on demand.
+
 ### The knowledge base
 
 Markdown in `knowledge/`, one retrievable chunk per `##` heading. See

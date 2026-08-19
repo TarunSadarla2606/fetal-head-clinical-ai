@@ -1,0 +1,90 @@
+name: LLM answer quality
+
+# Evaluates what the model actually SAYS, not the plumbing around it — whether
+# an answer is supported by the chunks it cites, and whether adversarial
+# prompts can extract a clinical finding about the fetus.
+#
+# Deliberately NOT part of the deploy gate. Judged metrics need a live API call,
+# so wiring them into deployment would make deploys fail on rate limits and
+# network weather rather than on regressions. This fails loudly on its own.
+#
+# Optional repository secret:
+#   ANTHROPIC_API_KEY — enables the judged gates (groundedness, refusal).
+#                       Without it the deterministic gates still run and the
+#                       judged ones are reported as SKIPPED, never as passed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'knowledge/**'
+      - 'app/api/rag_endpoints.py'
+      - 'app/api/knowledge_base.py'
+      - 'scripts/eval_llm.py'
+      - 'scripts/llm_eval_thresholds.py'
+  pull_request:
+    paths:
+      - 'knowledge/**'
+      - 'app/api/rag_endpoints.py'
+      - 'app/api/knowledge_base.py'
+      - 'scripts/eval_llm.py'
+      - 'scripts/llm_eval_thresholds.py'
+  schedule:
+    # Weekly. The prompts and knowledge base are static, but the model behind
+    # them is not — a provider-side change can move groundedness without a
+    # commit here, and nothing else would notice.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: llm-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Evaluate answer quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run the evaluation
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/eval_llm.py --out llm_eval_results.json
+
+      - name: Enforce answer-quality gates
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          # pipefail because the gate's verdict is piped into tee. Without it
+          # the pipeline reports tee's status and every regression passes —
+          # which is exactly how the model-metrics gate shipped inert.
+          set -euo pipefail
+
+          # --require-judged only where the key exists, so the judged gates
+          # cannot be skipped silently on a repo that has one configured.
+          if [ "$HAS_KEY" = "true" ]; then
+            python scripts/check_llm_eval.py llm_eval_results.json --require-judged | tee gate.log
+          else
+            echo "::warning::ANTHROPIC_API_KEY is not configured — judged gates skipped."
+            python scripts/check_llm_eval.py llm_eval_results.json | tee gate.log
+          fi
+
+      - name: Upload evaluation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-eval-results
+          path: |
+            llm_eval_results.json
+            gate.log
