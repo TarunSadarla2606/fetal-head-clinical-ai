@@ -13,7 +13,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from . import escalation, findings_store, inference_wrapper, model_manager
+from . import escalation, findings_store, inference_wrapper, model_manager, plane_check
 from .deps import verify_api_key
 from .rag_endpoints import DISCLAIMER, _sanitize_error, get_api_key
 from .schemas import EscalationResponse, ToolCallOut
@@ -142,7 +142,17 @@ def escalate(finding_id: str, _: None = Depends(verify_api_key)) -> EscalationRe
             detail="Unknown or expired finding_id. Re-run the analysis.",
         )
 
-    outcome = escalation.decide(record, _run_inference)
+    # The plane check needs a vision call, so it only happens where a key
+    # exists. Its absence costs a check, never a wrong verdict: it can only
+    # escalate, so without it the decision is what it always was.
+    api_key_for_vision, _ = get_api_key()
+    plane_checker = (
+        (lambda img: plane_check.check_plane(api_key_for_vision, img))
+        if api_key_for_vision
+        else None
+    )
+
+    outcome = escalation.decide(record, _run_inference, check_plane=plane_checker)
 
     # The decision and its rule-based rationale stand on their own. The model
     # only rewrites them for a reader, so a failed call costs phrasing, never

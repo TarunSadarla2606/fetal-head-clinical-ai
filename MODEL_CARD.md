@@ -30,9 +30,14 @@ supplied pixel spacing, and deriving a gestational-age estimate via the Hadlock
 - Measuring anything other than head circumference. Biparietal diameter,
   occipitofrontal diameter, abdominal circumference and femur length are not
   supported, and HC is not a substitute for them.
-- Images outside the transventricular plane. The model will still emit a
-  number on an incorrect plane, and that number will be wrong in a way it
-  cannot detect.
+- Images outside the transventricular plane. The segmentation model will still
+  emit a number on an incorrect plane, and that number will be wrong in a way
+  the *segmentation model* cannot detect. Since the reliability check gained a
+  vision-model plane assessment this is partially mitigated — but only
+  partially: that assessment is an unvalidated second opinion, it can only
+  raise a flag and never confirm adequacy, and it is skipped entirely when no
+  API key is configured. Plane correctness remains the operator's
+  responsibility.
 - First-trimester dating, where crown-rump length is the appropriate
   measurement.
 - Any modality other than 2-D B-mode ultrasound.

@@ -160,6 +160,21 @@ def tool_compare_measurements(primary_hc: float | None, alternate: dict) -> dict
     }
 
 
+def tool_check_plane(record, check: Callable[[object], object]) -> dict:
+    """Ask a vision model whether the image is even the right plane.
+
+    Every other signal available to this agent measures *precision* — frames
+    agreeing with each other, checkpoints agreeing with each other. All of them
+    can be perfect on a confidently-measured wrong plane. This is the only
+    check that looks at what the picture actually shows.
+
+    ``check`` is injected so the decision logic stays testable without a vision
+    API, and so the endpoint owns how the model is reached.
+    """
+    assessment = check(record.img_gray)
+    return assessment.to_dict()
+
+
 # ── the decision agent ───────────────────────────────────────────────────────
 
 
@@ -245,25 +260,91 @@ def _triage(signals: dict) -> tuple[Decision, str]:
     )
 
 
+def _apply_plane_check(
+    record,
+    check: Callable[[object], object],
+    decision: Decision,
+    rationale: str,
+) -> tuple[Decision, str, ToolCall]:
+    """Let a plane assessment escalate an ACCEPT — and only ever escalate it.
+
+    The asymmetry is the whole point and is enforced here rather than trusted to
+    a prompt: an objection flips ACCEPT to FLAG_FOR_REVIEW, while approval,
+    uncertainty and outright failure all leave the decision untouched. A vision
+    model is not a validated plane classifier on this distribution, so its
+    approval is not evidence. Reading it as evidence would mean a confident
+    green badge resting on an unvalidated opinion, which is worse than no check.
+    """
+    call = ToolCall(
+        tool="check_plane",
+        reason=(
+            "Every other signal here measures precision, which is unaffected by "
+            "measuring the wrong plane. Confirming the image is measurable needs "
+            "a look at the image itself."
+        ),
+    )
+    try:
+        call.result = tool_check_plane(record, check)
+    except Exception as exc:  # noqa: BLE001 — a failed tool must not 500
+        call.error = f"{type(exc).__name__}: {exc}"[:300]
+        log.warning("escalation: plane check failed — %s", call.error, exc_info=True)
+        # Unlike the re-check tool, a failure here does not escalate. That tool
+        # was reached for because the evidence was thin; this one runs on a
+        # result whose own evidence is already strong, so losing it returns us
+        # to where we started rather than leaving a gap.
+        return decision, rationale, call
+
+    if call.result.get("error"):
+        return decision, rationale, call
+
+    if not call.result.get("escalates"):
+        return decision, rationale, call
+
+    concerns = "; ".join(call.result.get("concerns") or []) or "no specific reason given"
+    return (
+        Decision.FLAG_FOR_REVIEW,
+        (
+            f"{rationale} However, a vision model reviewing the image itself "
+            f"judged it unsuitable for this measurement ({concerns}). Frame and "
+            "checkpoint agreement cannot detect a well-measured wrong plane, so "
+            "this is referred for confirmation despite the consistent numbers."
+        ),
+        call,
+    )
+
+
 def decide(
     record,
     run_inference: Callable[[str, object, float, float], dict],
+    check_plane: Callable[[object], object] | None = None,
 ) -> EscalationOutcome:
-    """Assess the measurement, optionally use a tool, and return a verdict.
+    """Assess the measurement, optionally use tools, and return a verdict.
 
-    The tool is invoked only when triage returns ``RE_CHECK``. A clear accept or
-    a clear flag is already decided; spending a second forward pass on either
+    The re-check tool runs only when triage returns ``RE_CHECK``. A clear accept
+    or a clear flag is already decided; spending a second forward pass on either
     would be a fixed pipeline pretending to be a decision.
+
+    The plane check, when supplied, runs on results that would otherwise be
+    ACCEPTed — because that is the only branch it can change. It cannot rescue a
+    flag and it must never clear one, so running it on an already-flagged result
+    would spend a vision call to learn nothing.
     """
     signals = _collect_signals(record.findings or {})
     decision, rationale = _triage(signals)
     tool_calls: list[ToolCall] = []
+
+    if decision is Decision.ACCEPT and check_plane is not None:
+        decision, rationale, plane_call = _apply_plane_check(
+            record, check_plane, decision, rationale
+        )
+        tool_calls.append(plane_call)
 
     if decision is not Decision.RE_CHECK:
         return EscalationOutcome(
             decision=decision,
             badge_color=BADGE_COLOR[decision],
             signals=signals,
+            tool_calls=tool_calls,
             rationale=rationale,
         )
 

@@ -408,6 +408,46 @@ The verdict then depends on what the tool returned: checkpoints agreeing within
 the **ISUOG 3 mm** threshold clears a borderline result; a wider disagreement is
 clinically material and escalates.
 
+### The plane check — reaching outside the pipeline's own reasoning
+
+Every other signal this agent has measures **precision**: frames agreeing with
+each other, checkpoints agreeing with each other. All of them can be perfect on
+a confidently-measured *wrong plane*. The model card names that hazard directly
+— an off-axis section still yields a plausible skull outline and a confident
+millimetre value derived from the wrong structure.
+
+So a third tool asks a vision model what the picture actually shows, against the
+transventricular criteria: symmetrical hemispheres, a continuous midline falx
+interrupted by the cavum septi pellucidi, and no cerebellum in view.
+
+**Trust is deliberately asymmetric, and enforced in code rather than by prompt:**
+
+| Verdict | Effect |
+|---|---|
+| "no" / quality poor | **Escalates** an ACCEPT to FLAG_FOR_REVIEW |
+| "yes" | **Nothing.** Does not raise confidence, does not clear a flag |
+| "unclear" | Nothing — "I cannot tell" is not an objection |
+| call failed | Nothing |
+
+A vision model is not a validated plane classifier on this distribution. False
+reassurance about image adequacy is a worse failure than a missed warning: one
+costs a redundant human look, the other silently blesses a wrong number. A test
+asserts an approving check leaves the rationale byte-identical, because any
+change would mean it had been read as evidence.
+
+Two further consequences, both tested:
+
+- The check runs **only on results heading for ACCEPT** — the one branch it can
+  change. Spending a vision call on an already-flagged result would learn
+  nothing.
+- A **failed** plane check does *not* escalate, unlike a failed re-check. That
+  tool was reached for because the evidence was thin; this one runs on a result
+  whose own evidence is already strong, so losing it returns us to where we
+  started rather than leaving a gap.
+
+Without `ANTHROPIC_API_KEY` the check is skipped entirely. Because it can only
+escalate, its absence costs a check and never a verdict.
+
 ### Abstention behaviour
 
 Each of these is a test, because a safety feature that fails open is worse than
